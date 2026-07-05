@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import agent
+import launcher
 
 DATA_FILE = Path(__file__).parent / "data.json"
 _lock = threading.Lock()
@@ -63,6 +64,7 @@ class Topic(BaseModel):
     plan: str = ""
     sessionId: str = ""
     planError: str = ""
+    fullstack: bool = False  # runs its own backend; launched, not statically served
 
 
 class TopicCreate(BaseModel):
@@ -98,12 +100,73 @@ def _reconcile(topic: Topic) -> str:
     fall back to whether a plan survived. This keeps status from silently
     drifting away from reality across restarts.
     """
+    if topic.fullstack:
+        return topic.planStatus  # launched on demand, not backed by a dist/
     if agent.is_built(topic.slug):
         return "built"
     # No bundle on disk: any mid-flight or stale "built" status is orphaned.
     if topic.planStatus in _TRANSIENT or topic.planStatus == "built":
         return "ready" if topic.plan else "none"
     return topic.planStatus  # ready / error / none are already disk-consistent
+
+
+def _import_prebuilt(loaded: State) -> bool:
+    """Register externally-copied, pre-built concepts as cards.
+
+    Any workspace folder holding a ``concept.json`` marker plus a built
+    ``dist/`` (e.g. repos copied in from the sister ``software-engineering``
+    project) becomes a "built" topic if it isn't one already. Slug = folder
+    name, so it maps straight to the /concepts/<slug>/ serving route. Agent-built
+    concepts have no concept.json, so they are never double-registered.
+    """
+    known = {t.slug for t in loaded.topics if t.slug}
+    added = False
+    for marker in sorted(agent.WORKSPACE.glob("*/concept.json")):
+        slug = marker.parent.name
+        if slug in known or not agent.is_built(slug):
+            continue
+        try:
+            meta = json.loads(marker.read_text())
+        except (json.JSONDecodeError, ValueError):
+            meta = {}
+        loaded.topics.append(Topic(
+            title=meta.get("title") or slug.replace("-", " ").title(),
+            blurb=meta.get("blurb", ""),
+            slug=slug,
+            planStatus="built",
+        ))
+        known.add(slug)
+        added = True
+    return added
+
+
+def _register_fullstack(loaded: State) -> bool:
+    """Ensure each full-stack concept exists and is flagged full-stack.
+
+    Upgrades an existing topic with a matching slug (e.g. one left over from an
+    earlier static registration) rather than skipping it — otherwise such a
+    topic gets stranded as a non-clickable "none" card.
+    """
+    by_slug = {t.slug: t for t in loaded.topics if t.slug}
+    changed = False
+    for slug, spec in launcher.SPECS.items():
+        existing = by_slug.get(slug)
+        if existing is None:
+            loaded.topics.append(Topic(
+                title=spec["title"],
+                blurb=spec.get("blurb", ""),
+                slug=slug,
+                planStatus="built",
+                fullstack=True,
+            ))
+            changed = True
+        elif not existing.fullstack:
+            existing.fullstack = True
+            existing.planStatus = "built"
+            if not existing.blurb:
+                existing.blurb = spec.get("blurb", "")
+            changed = True
+    return changed
 
 
 def load_state() -> State:
@@ -116,13 +179,21 @@ def load_state() -> State:
                 if reconciled != topic.planStatus:
                     topic.planStatus = reconciled
                     changed = True
+            changed = _import_prebuilt(loaded) or changed
+            changed = _register_fullstack(loaded) or changed
             if changed:
                 save_state(loaded)  # persist so disk matches reality
             return loaded
         except (json.JSONDecodeError, ValueError):
             # Corrupt file — start fresh rather than crash on boot.
             pass
-    return State()
+    # Fresh install: still surface any pre-built / full-stack concepts on disk.
+    fresh = State()
+    imported = _import_prebuilt(fresh)
+    registered = _register_fullstack(fresh)
+    if imported or registered:
+        save_state(fresh)
+    return fresh
 
 
 def save_state(state: State) -> None:
@@ -446,6 +517,22 @@ def get_log(topic_id: str) -> dict:
         topic = _find(topic_id)
         status = topic.planStatus if topic else "none"
     return {"status": status, "lines": _log_get(topic_id)}
+
+
+# --- Full-stack concept apps (launched on demand) ---------------------------
+@app.post("/api/concepts/{slug}/launch")
+def launch_concept(slug: str) -> dict:
+    return launcher.launch(slug)
+
+
+@app.post("/api/concepts/{slug}/stop")
+def stop_concept(slug: str) -> dict:
+    return launcher.stop(slug)
+
+
+@app.get("/api/concepts/{slug}/app")
+def concept_app_status(slug: str) -> dict:
+    return launcher.status(slug)
 
 
 # --- Serving built concepts -------------------------------------------------

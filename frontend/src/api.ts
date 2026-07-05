@@ -17,6 +17,14 @@ export interface Topic {
   plan: string;
   sessionId: string;
   planError: string;
+  fullstack: boolean;
+}
+
+export type AppStatus = "stopped" | "starting" | "running" | "error";
+export interface AppState {
+  status: AppStatus;
+  url: string;
+  error: string;
 }
 
 export interface State {
@@ -97,6 +105,15 @@ export const api = {
     fetch(`/api/topics/${id}/log`).then(
       json<{ status: PlanStatus; lines: string[] }>
     ),
+
+  launchApp: (slug: string) =>
+    fetch(`/api/concepts/${slug}/launch`, { method: "POST" }).then(json<AppState>),
+
+  stopApp: (slug: string) =>
+    fetch(`/api/concepts/${slug}/stop`, { method: "POST" }).then(json<AppState>),
+
+  appStatus: (slug: string) =>
+    fetch(`/api/concepts/${slug}/app`).then(json<AppState>),
 };
 
 /** URL where a built concept is served (via the backend / dev proxy). */
