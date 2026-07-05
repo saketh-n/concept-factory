@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Rendered plan markdown (Cursor-plan-mode style read view). */
+.plan-prose {
+  color: #334155;
+  font-size: 0.925rem;
+  line-height: 1.65;
+}
+.plan-prose h1 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0 0 0.75rem;
+}
+.plan-prose h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 1.4rem 0 0.5rem;
+}
+.plan-prose h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 1rem 0 0.4rem;
+}
+.plan-prose p {
+  margin: 0.5rem 0;
+}
+.plan-prose ul,
+.plan-prose ol {
+  margin: 0.5rem 0;
+  padding-left: 1.4rem;
+}
+.plan-prose ul {
+  list-style: disc;
+}
+.plan-prose ol {
+  list-style: decimal;
+}
+.plan-prose li {
+  margin: 0.25rem 0;
+}
+.plan-prose strong {
+  color: #0f172a;
+  font-weight: 600;
+}
+.plan-prose code {
+  background: #f1f5f9;
+  border-radius: 0.3rem;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.85em;
+  color: #4338ca;
+}
+.plan-prose pre {
+  background: #0e1017;
+  color: #e2e8f0;
+  border-radius: 0.6rem;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+.plan-prose pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+}
+.plan-prose hr {
+  border: 0;
+  border-top: 1px solid #e2e8f0;
+  margin: 1.25rem 0;
+}
+.plan-prose table {
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.85rem;
+}
+.plan-prose th,
+.plan-prose td {
+  border: 1px solid #e2e8f0;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
