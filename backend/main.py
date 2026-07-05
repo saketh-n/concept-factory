@@ -399,6 +399,7 @@ def _build_job(topic_id: str) -> None:
         topic.planError = ""
         slug = _ensure_slug(topic)
         plan_text = topic.plan
+        title = topic.title
         save_state(state)
 
     _log_reset(topic_id)
@@ -423,6 +424,8 @@ def _build_job(topic_id: str) -> None:
     # Re-build with the right base path so we can serve it under /concepts/<slug>/.
     emit("Preparing the concept for viewing…")
     if agent.finalize_build(cwd, f"/concepts/{slug}/", emit):
+        emit("Committing initial build to git…")
+        agent.git_commit(cwd, f"Build: {title}")
         _set(topic_id, planStatus="built", planError="")
     else:
         _set(
@@ -430,6 +433,68 @@ def _build_job(topic_id: str) -> None:
             planStatus="error",
             planError="Build succeeded but the servable bundle failed to compile.",
         )
+
+
+def _improve_job(topic_id: str, request: str) -> None:
+    with _lock:
+        topic = _find(topic_id)
+        if not topic:
+            return
+        topic.planStatus = "building"
+        topic.planError = ""
+        slug = _ensure_slug(topic)
+        session_id = topic.sessionId or None
+        save_state(state)
+
+    _log_reset(topic_id)
+    emit = lambda line: _log_append(topic_id, line)
+    cwd = agent.topic_dir(slug)
+    # Baseline commit so imported/older apps have a starting point to revert to.
+    agent.git_commit(cwd, "Snapshot before improvement")
+    emit(f"Requesting improvement: {request}")
+    result = agent.run_claude(
+        agent.improve_prompt(request),
+        cwd,
+        on_line=emit,
+        session_id=session_id,
+        dangerously_skip=True,
+        timeout=agent.BUILD_TIMEOUT,
+    )
+    if result["error"]:
+        _set(topic_id, planStatus="error", planError=result["error"],
+             sessionId=result["sessionId"] or "")
+        return
+    emit("Rebuilding the servable bundle…")
+    if agent.finalize_build(cwd, f"/concepts/{slug}/", emit):
+        emit("Committing changes to git…")
+        agent.git_commit(cwd, f"Improve: {request}")
+        _set(topic_id, planStatus="built", planError="", sessionId=result["sessionId"] or "")
+    else:
+        _set(topic_id, planStatus="error",
+             planError="Improvement broke the build; nothing was committed.")
+
+
+def _revert_job(topic_id: str, commit_hash: str) -> None:
+    with _lock:
+        topic = _find(topic_id)
+        if not topic:
+            return
+        topic.planStatus = "building"
+        topic.planError = ""
+        slug = _ensure_slug(topic)
+        save_state(state)
+
+    _log_reset(topic_id)
+    emit = lambda line: _log_append(topic_id, line)
+    cwd = agent.topic_dir(slug)
+    emit(f"Reverting to commit {commit_hash[:8]}…")
+    agent.git_revert_to(cwd, commit_hash)
+    emit("Rebuilding the servable bundle…")
+    if agent.finalize_build(cwd, f"/concepts/{slug}/", emit):
+        _set(topic_id, planStatus="built", planError="")
+    else:
+        _set(topic_id, planStatus="error",
+             planError="Reverted, but that version failed to build.")
 
 
 @app.post("/api/plans/generate")
@@ -507,6 +572,55 @@ def build_topic(topic_id: str) -> Topic:
         topic.planError = ""
         save_state(state)
     agent.EXECUTOR.submit(_build_job, topic_id)
+    return topic
+
+
+class HashRequest(BaseModel):
+    hash: str
+
+
+@app.post("/api/topics/{topic_id}/improve", response_model=Topic)
+def improve_topic(topic_id: str, payload: RefineRequest) -> Topic:
+    with _lock:
+        topic = _find(topic_id)
+        if not topic:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        if topic.planStatus != "built":
+            raise HTTPException(status_code=400, detail="Build the concept first")
+        topic.planStatus = "building"
+        topic.planError = ""
+        save_state(state)
+    agent.EXECUTOR.submit(_improve_job, topic_id, payload.prompt)
+    return topic
+
+
+@app.get("/api/topics/{topic_id}/history")
+def topic_history(topic_id: str) -> dict:
+    with _lock:
+        topic = _find(topic_id)
+        if not topic or not topic.slug:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        slug = topic.slug
+        built = topic.planStatus == "built"
+    cwd = agent.topic_dir(slug)
+    # Give an already-built app that predates git a starting commit.
+    if built and not (cwd / ".git").exists():
+        agent.git_commit(cwd, "Initial commit")
+    return {"commits": agent.git_log(cwd)}
+
+
+@app.post("/api/topics/{topic_id}/revert", response_model=Topic)
+def revert_topic(topic_id: str, payload: HashRequest) -> Topic:
+    with _lock:
+        topic = _find(topic_id)
+        if not topic:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        if topic.planStatus != "built":
+            raise HTTPException(status_code=400, detail="Nothing built to revert")
+        topic.planStatus = "building"
+        topic.planError = ""
+        save_state(state)
+    agent.EXECUTOR.submit(_revert_job, topic_id, payload.hash)
     return topic
 
 

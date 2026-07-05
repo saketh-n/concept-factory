@@ -1,7 +1,116 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, conceptUrl, type Topic } from "../api";
+import { api, conceptUrl, type Commit, type Topic } from "../api";
+
+function relTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const s = Math.round((Date.now() - then) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+/** Improve-this-app box + git version history with revert. */
+function BuiltPanel({
+  topic,
+  onSaved,
+}: {
+  topic: Topic;
+  onSaved: (t: Topic) => void;
+}) {
+  const [commits, setCommits] = useState<Commit[]>([]);
+  const [request, setRequest] = useState("");
+
+  const loadHistory = () =>
+    api.getHistory(topic.id).then((r) => setCommits(r.commits)).catch(() => {});
+
+  // (Re)load history whenever the app settles back into "built".
+  useEffect(() => {
+    if (topic.planStatus === "built") loadHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topic.id, topic.planStatus]);
+
+  const improve = async () => {
+    if (!request.trim()) return;
+    onSaved(await api.improveApp(topic.id, request.trim()));
+    setRequest("");
+  };
+
+  const revert = async (hash: string) => {
+    if (!confirm("Revert the app to this version? A new commit will record it.")) return;
+    onSaved(await api.revertTo(topic.id, hash));
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-lg bg-emerald-50 p-4 text-sm text-emerald-800">
+        Claude Code finished building the concept. Open it, request improvements,
+        or roll back to an earlier version below.
+      </div>
+
+      {/* Request an improvement */}
+      <div>
+        <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
+          Improve this app
+        </div>
+        <div className="flex gap-2">
+          <input
+            className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
+            placeholder="e.g. add a dark-mode toggle, or two harder levels…"
+            value={request}
+            onChange={(e) => setRequest(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && improve()}
+          />
+          <button
+            onClick={improve}
+            disabled={!request.trim()}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+          >
+            Improve
+          </button>
+        </div>
+      </div>
+
+      {/* Version history */}
+      <div>
+        <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
+          Version history
+        </div>
+        {commits.length === 0 ? (
+          <p className="text-sm text-slate-400">No commits yet.</p>
+        ) : (
+          <ol className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+            {commits.map((c, i) => (
+              <li key={c.hash} className="flex items-center justify-between gap-3 px-3 py-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm text-slate-700">{c.message}</div>
+                  <div className="font-mono text-xs text-slate-400">
+                    {c.hash.slice(0, 7)} · {relTime(c.date)}
+                  </div>
+                </div>
+                {i === 0 ? (
+                  <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                    current
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => revert(c.hash)}
+                    className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    Revert
+                  </button>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </div>
+  );
+}
 
 interface Props {
   topic: Topic;
@@ -159,24 +268,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
               onChange={(e) => setDraft(e.target.value)}
             />
           ) : built ? (
-            <div className="space-y-4">
-              <div className="rounded-lg bg-emerald-50 p-4 text-sm text-emerald-800">
-                Claude Code finished building the concept. Open it to explore the
-                Learn guide and Test game.
-              </div>
-              {topic.plan && (
-                <details className="text-sm">
-                  <summary className="cursor-pointer text-slate-500">
-                    Show the plan it was built from
-                  </summary>
-                  <div className="plan-prose mt-3">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {topic.plan}
-                    </ReactMarkdown>
-                  </div>
-                </details>
-              )}
-            </div>
+            <BuiltPanel topic={topic} onSaved={onSaved} />
           ) : topic.plan ? (
             <div className="plan-prose">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>

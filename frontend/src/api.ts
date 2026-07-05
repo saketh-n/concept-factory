@@ -27,6 +27,12 @@ export interface AppState {
   error: string;
 }
 
+export interface Commit {
+  hash: string;
+  message: string;
+  date: string;
+}
+
 export interface State {
   metaPrompt: string;
   topics: Topic[];
@@ -114,6 +120,23 @@ export const api = {
 
   appStatus: (slug: string) =>
     fetch(`/api/concepts/${slug}/app`).then(json<AppState>),
+
+  improveApp: (id: string, prompt: string) =>
+    fetch(`/api/topics/${id}/improve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    }).then(json<Topic>),
+
+  getHistory: (id: string) =>
+    fetch(`/api/topics/${id}/history`).then(json<{ commits: Commit[] }>),
+
+  revertTo: (id: string, hash: string) =>
+    fetch(`/api/topics/${id}/revert`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hash }),
+    }).then(json<Topic>),
 };
 
 /** URL where a built concept is served (via the backend / dev proxy). */

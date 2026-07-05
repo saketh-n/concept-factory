@@ -177,6 +177,80 @@ Also smoke-test the game core: feed level 1's canonical answer through the \
 validator and confirm it returns ok. Report what you built and the gate results."""
 
 
+def improve_prompt(request: str) -> str:
+    return (
+        "The app in your current working directory is already built and working "
+        "(a Vite + React + TypeScript learning app with a Learn page and a Test "
+        "game). Apply this improvement without breaking what's there — change only "
+        f"what's needed:\n\n{request}\n\nThen verify it still compiles cleanly:\n"
+        "```\nnpm run lint\nnpm run build\n```\nFix and re-run until green, then "
+        "briefly report what you changed. Do not touch git."
+    )
+
+
+# --- Git history ------------------------------------------------------------
+# Every Claude Code change to an app is captured as a descriptive commit so a
+# bad change can be rolled back. Commits are made by the backend (deterministic),
+# not the agent — the house rules forbid the agent from touching git.
+def _git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+
+
+def _git_ensure_repo(cwd: Path) -> None:
+    if (cwd / ".git").exists():
+        return
+    _git(["init", "-q"], cwd)
+    _git(["config", "user.email", "factory@concept.local"], cwd)
+    _git(["config", "user.name", "Concept Factory"], cwd)
+    # Keep generated/heavy dirs out of history so commits are just source.
+    gi = cwd / ".gitignore"
+    lines = gi.read_text().splitlines() if gi.exists() else []
+    for pat in ("node_modules", "dist", ".cflogs"):
+        if pat not in lines:
+            lines.append(pat)
+    gi.write_text("\n".join(lines) + "\n")
+
+
+def git_commit(cwd: Path, message: str) -> bool:
+    """Snapshot the app's source as a commit (inits the repo on first use).
+
+    Returns True if a commit was made, False if nothing changed.
+    """
+    _git_ensure_repo(cwd)
+    _git(["add", "-A"], cwd)
+    if _git(["diff", "--cached", "--quiet"], cwd).returncode == 0:
+        return False  # nothing staged
+    _git(["commit", "-q", "-m", message], cwd)
+    return True
+
+
+def git_log(cwd: Path, n: int = 100) -> list:
+    if not (cwd / ".git").exists():
+        return []
+    out = _git(["log", f"-{n}", "--pretty=format:%H%x1f%s%x1f%cI"], cwd).stdout
+    commits = []
+    for line in out.splitlines():
+        parts = line.split("\x1f")
+        if len(parts) == 3:
+            commits.append({"hash": parts[0], "message": parts[1], "date": parts[2]})
+    return commits
+
+
+def git_revert_to(cwd: Path, target: str) -> bool:
+    """Restore the source to a prior commit as a NEW commit (history preserved
+    so you can still go forward again)."""
+    if not (cwd / ".git").exists():
+        return False
+    old = _git(["rev-parse", "HEAD"], cwd).stdout.strip()
+    if not old or target == old:
+        return False
+    _git(["reset", "--hard", target], cwd)   # worktree + index -> target
+    _git(["reset", "--soft", old], cwd)       # move HEAD back to tip, keep content
+    if _git(["diff", "--cached", "--quiet"], cwd).returncode != 0:
+        _git(["commit", "-q", "-m", f"Revert to {target[:8]}"], cwd)
+    return True
+
+
 def refine_prompt(feedback: str) -> str:
     return (
         "Revise PLAN.md based on this feedback. Keep the same section structure "
