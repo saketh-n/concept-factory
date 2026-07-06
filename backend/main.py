@@ -15,7 +15,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 import agent
@@ -334,6 +334,29 @@ def _find(topic_id: str) -> Optional[Topic]:
     return next((t for t in state.topics if t.id == topic_id), None)
 
 
+def _find_by_slug(slug: str) -> Optional[Topic]:
+    return next((t for t in state.topics if t.slug == slug), None)
+
+
+def _work_dir(topic: Topic) -> Path:
+    """The concept's real working directory — where its code and git history
+    live — with history seeded from the source repo if it has none yet.
+
+    Full-stack concepts run from ``fullstack/<slug>``; everything else from the
+    static ``workspace/<slug>``. Either way we adopt the source repo's real
+    history (the copies were made without it) so review/revert operate on the
+    genuine timeline rather than a phantom "Initial commit".
+    """
+    if topic.fullstack:
+        d = launcher.RUNTIME / topic.slug
+        if not d.exists() and topic.slug in launcher.SPECS:
+            d = launcher._prepare(topic.slug)
+    else:
+        d = agent.topic_dir(topic.slug)
+    agent.seed_history(d, launcher.SRC / topic.slug)
+    return d
+
+
 def _ensure_slug(topic: Topic) -> str:
     """Assign a unique kebab-case slug + subfolder if the topic lacks one."""
     if not topic.slug:
@@ -453,15 +476,23 @@ def _improve_job(topic_id: str, request: str) -> None:
             return
         topic.planStatus = "building"
         topic.planError = ""
-        slug = _ensure_slug(topic)
+        _ensure_slug(topic)
         session_id = topic.sessionId or None
+        slug = topic.slug
+        fullstack = topic.fullstack
         save_state(state)
 
     _log_reset(topic_id)
     emit = lambda line: _log_append(topic_id, line)
-    cwd = agent.topic_dir(slug)
-    # Baseline commit so imported/older apps have a starting point to revert to.
+    cwd = _work_dir(topic)
+    # Guarantee a restorable baseline BEFORE Claude Code touches anything. This
+    # appends to the concept's real history (never replaces it), so a bad change
+    # can always be rolled back.
     agent.git_commit(cwd, "Snapshot before improvement")
+    if not (cwd / ".git").exists():
+        _set(topic_id, planStatus="error",
+             planError="Could not create a git snapshot to protect your work; nothing was changed.")
+        return
     emit(f"Requesting improvement: {request}")
     result = agent.run_claude(
         agent.improve_prompt(request),
@@ -475,6 +506,16 @@ def _improve_job(topic_id: str, request: str) -> None:
         _set(topic_id, planStatus="error", planError=result["error"],
              sessionId=result["sessionId"] or "")
         return
+
+    # Full-stack apps are launched, not statically served, so there is no bundle
+    # to compile — just commit the change (it takes effect on the next launch).
+    if fullstack:
+        emit("Committing changes to git…")
+        agent.git_commit(cwd, f"Improve: {request}")
+        _set(topic_id, planStatus="built", planError="", sessionId=result["sessionId"] or "")
+        emit("✓ Saved. Relaunch the concept to see the changes.")
+        return
+
     emit("Rebuilding the servable bundle…")
     if agent.finalize_build(cwd, f"/concepts/{slug}/", emit):
         emit("Committing changes to git…")
@@ -492,14 +533,25 @@ def _revert_job(topic_id: str, commit_hash: str) -> None:
             return
         topic.planStatus = "building"
         topic.planError = ""
-        slug = _ensure_slug(topic)
+        _ensure_slug(topic)
+        slug = topic.slug
+        fullstack = topic.fullstack
         save_state(state)
 
     _log_reset(topic_id)
     emit = lambda line: _log_append(topic_id, line)
-    cwd = agent.topic_dir(slug)
+    cwd = _work_dir(topic)
+    # Snapshot the current state first so the revert itself is reversible and no
+    # uncommitted work is lost by the hard reset inside git_revert_to.
+    agent.git_commit(cwd, "Snapshot before revert")
     emit(f"Reverting to commit {commit_hash[:8]}…")
     agent.git_revert_to(cwd, commit_hash)
+
+    if fullstack:
+        _set(topic_id, planStatus="built", planError="")
+        emit("✓ Reverted. Relaunch the concept to see this version.")
+        return
+
     emit("Rebuilding the servable bundle…")
     if agent.finalize_build(cwd, f"/concepts/{slug}/", emit):
         _set(topic_id, planStatus="built", planError="")
@@ -611,13 +663,7 @@ def topic_history(topic_id: str) -> dict:
         topic = _find(topic_id)
         if not topic or not topic.slug:
             raise HTTPException(status_code=404, detail="Topic not found")
-        slug = topic.slug
-        built = topic.planStatus == "built"
-    cwd = agent.topic_dir(slug)
-    # Give an already-built app that predates git a starting commit.
-    if built and not (cwd / ".git").exists():
-        agent.git_commit(cwd, "Initial commit")
-    return {"commits": agent.git_log(cwd)}
+    return {"commits": agent.git_log(_work_dir(topic))}
 
 
 @app.post("/api/topics/{topic_id}/revert", response_model=Topic)
@@ -660,19 +706,119 @@ def concept_app_status(slug: str) -> dict:
     return launcher.status(slug)
 
 
+# --- Slug-scoped tools (used by the in-page concept widget) ------------------
+# These mirror the topic-id endpoints but resolve by slug, so the widget baked
+# into a served concept page can drive improve / history / revert / status
+# knowing only its own URL.
+@app.get("/api/concepts/{slug}/status")
+def concept_status(slug: str) -> dict:
+    topic = _find_by_slug(slug)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Concept not found")
+    return {"status": topic.planStatus, "error": topic.planError}
+
+
+@app.get("/api/concepts/{slug}/log")
+def concept_log(slug: str) -> dict:
+    """Live Claude Code output for the in-page widget's rebuild view."""
+    topic = _find_by_slug(slug)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Concept not found")
+    return {
+        "status": topic.planStatus,
+        "error": topic.planError,
+        "lines": _log_get(topic.id),
+    }
+
+
+@app.get("/api/concepts/{slug}/history")
+def concept_history(slug: str) -> dict:
+    with _lock:
+        topic = _find_by_slug(slug)
+        if not topic:
+            raise HTTPException(status_code=404, detail="Concept not found")
+        status = topic.planStatus
+    return {"commits": agent.git_log(_work_dir(topic)), "status": status}
+
+
+@app.post("/api/concepts/{slug}/improve")
+def concept_improve(slug: str, payload: RefineRequest) -> dict:
+    with _lock:
+        topic = _find_by_slug(slug)
+        if not topic:
+            raise HTTPException(status_code=404, detail="Concept not found")
+        if topic.planStatus != "built":
+            raise HTTPException(status_code=400, detail="Build the concept first")
+        topic.planStatus = "building"
+        topic.planError = ""
+        topic_id = topic.id
+        save_state(state)
+    agent.EXECUTOR.submit(_improve_job, topic_id, payload.prompt)
+    return {"status": "building"}
+
+
+@app.post("/api/concepts/{slug}/revert")
+def concept_revert(slug: str, payload: HashRequest) -> dict:
+    with _lock:
+        topic = _find_by_slug(slug)
+        if not topic:
+            raise HTTPException(status_code=404, detail="Concept not found")
+        if topic.planStatus != "built":
+            raise HTTPException(status_code=400, detail="Nothing built to revert")
+        topic.planStatus = "building"
+        topic.planError = ""
+        topic_id = topic.id
+        save_state(state)
+    agent.EXECUTOR.submit(_revert_job, topic_id, payload.hash)
+    return {"status": "building"}
+
+
 # --- Serving built concepts -------------------------------------------------
+_WIDGET_JS = (Path(__file__).parent / "concept_widget.js").read_text()
+
+
+# Served under /concepts/ so the frontend dev-server proxy (which forwards
+# /concepts but not arbitrary top-level paths) reaches it in dev too. This
+# route is declared before the catch-all serve_concept, so it wins.
+@app.get("/concepts/__widget.js")
+def concept_widget_js() -> Response:
+    return Response(
+        content=_WIDGET_JS,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+def _inject_widget(html: str, slug: str) -> str:
+    """Bake the tools widget into a concept's index.html before serving it."""
+    tag = (
+        f'<script>window.__CONCEPT_SLUG__={json.dumps(slug)};</script>'
+        '<script src="/concepts/__widget.js" defer></script>'
+    )
+    lower = html.lower()
+    idx = lower.rfind("</body>")
+    if idx == -1:
+        return html + tag
+    return html[:idx] + tag + html[idx:]
+
+
 @app.get("/concepts/{slug}/{path:path}")
 def serve_concept(slug: str, path: str = ""):
     """Serve a built concept's static bundle, with SPA fallback to index.html."""
     root = (agent.WORKSPACE / slug / "dist").resolve()
     if not root.exists():
         raise HTTPException(status_code=404, detail="Concept not built")
+    # Concept HTML must not be cached, or a browser can serve a stale copy that
+    # predates the injected tools widget.
+    no_cache = {"Cache-Control": "no-cache"}
     if path:
         target = (root / path).resolve()
         # Guard against path traversal outside the dist folder.
         if str(target).startswith(str(root)) and target.is_file():
+            if target.suffix.lower() in (".html", ".htm"):
+                return HTMLResponse(_inject_widget(target.read_text(), slug), headers=no_cache)
             return FileResponse(target)
     index = root / "index.html"
     if index.is_file():
-        return FileResponse(index)
+        return HTMLResponse(_inject_widget(index.read_text(), slug), headers=no_cache)
     raise HTTPException(status_code=404, detail="Concept not built")

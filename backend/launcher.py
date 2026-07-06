@@ -110,8 +110,8 @@ def _prepare(slug: str) -> Path:
         src = SRC / slug
         if subprocess.run(["cp", "-Rc", str(src), str(dest)]).returncode != 0:
             subprocess.run(["cp", "-R", str(src), str(dest)], check=True)
-        for junk in [dest / ".git"]:
-            subprocess.run(["rm", "-rf", str(junk)])
+        # NB: the source .git is kept on purpose — it carries the concept's real
+        # version history, which the UI exposes for review/revert.
         # Point the frontend's /api proxy at our remapped backend port.
         be = SPECS[slug]["be_port"]
         if be:

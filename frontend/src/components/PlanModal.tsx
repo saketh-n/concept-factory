@@ -13,7 +13,8 @@ function relTime(iso: string): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-/** Improve-this-app box + git version history with revert. */
+/** Improve-this-app box + git version history with revert. Also available as a
+ *  floating bubble on the concept page itself — both drive the same endpoints. */
 function BuiltPanel({
   topic,
   onSaved,
