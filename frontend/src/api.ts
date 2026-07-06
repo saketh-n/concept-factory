@@ -18,6 +18,8 @@ export interface Topic {
   sessionId: string;
   planError: string;
   fullstack: boolean;
+  /** Hierarchy as a materialized path, e.g. ["Linux", "Shell"]. */
+  path: string[];
 }
 
 export type AppStatus = "stopped" | "starting" | "running" | "error";

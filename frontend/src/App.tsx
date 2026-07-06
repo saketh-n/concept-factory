@@ -1,9 +1,21 @@
 import { useEffect, useState } from "react";
 import { api, type Topic } from "./api";
 import TopicCard from "./components/TopicCard";
+import GroupTree from "./components/GroupTree";
 import PlanModal from "./components/PlanModal";
 
 const BUSY: Topic["planStatus"][] = ["queued", "planning", "building"];
+
+/** Pipeline order + colors for the fleet summary strip. */
+const PIPELINE: { status: Topic["planStatus"]; label: string; dot: string }[] = [
+  { status: "none", label: "no plan", dot: "bg-white/25" },
+  { status: "queued", label: "queued", dot: "bg-slate-400" },
+  { status: "planning", label: "planning", dot: "bg-violet-400" },
+  { status: "ready", label: "plan ready", dot: "bg-emerald-400/70" },
+  { status: "building", label: "building", dot: "bg-amber-400" },
+  { status: "built", label: "built", dot: "bg-emerald-400" },
+  { status: "error", label: "error", dot: "bg-rose-400" },
+];
 
 /** Merge server topics onto local, preserving object identity for unchanged
  *  cards so in-progress inline edits aren't clobbered by polling. */
@@ -20,6 +32,7 @@ export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [paste, setPaste] = useState("");
   const [loading, setLoading] = useState(true);
+  const [intakeOpen, setIntakeOpen] = useState(false);
   const [openPlanId, setOpenPlanId] = useState<string | null>(null);
 
   const anyBusy = topics.some((t) => BUSY.includes(t.planStatus));
@@ -31,6 +44,7 @@ export default function App() {
       .then((s) => {
         setMetaPrompt(s.metaPrompt);
         setTopics(s.topics);
+        setIntakeOpen(s.topics.length === 0);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -84,96 +98,126 @@ export default function App() {
     setTopics([]);
   };
 
+  const counts = PIPELINE.map((p) => ({
+    ...p,
+    n: topics.filter((t) => t.planStatus === p.status).length,
+  })).filter((p) => p.n > 0);
+
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900">
-      {/* Meta prompt bar */}
-      <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/80 backdrop-blur">
-        <div className="mx-auto max-w-5xl px-6 py-4">
-          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">
-            Meta Prompt
-          </label>
+    <div className="min-h-screen">
+      {/* Top bar: wordmark · meta prompt · actions */}
+      <header className="sticky top-0 z-10 border-b border-white/[0.07] bg-ink/85 backdrop-blur">
+        <div className="mx-auto flex max-w-4xl items-center gap-5 px-6 py-3">
+          <span className="shrink-0 select-none font-mono text-sm font-semibold text-slate-100">
+            concept<span className="text-violet-400">_</span>factory
+          </span>
+
           <input
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
-            placeholder="The guiding prompt for this whole board..."
+            className="min-w-0 flex-1 rounded-lg border border-white/[0.07] bg-well px-3.5 py-2 text-[0.83rem] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:border-violet-400/40"
+            placeholder="Meta prompt — guidance the agent applies to every topic…"
+            title="Applied to every topic when planning and building"
             value={metaPrompt}
             onChange={(e) => setMetaPrompt(e.target.value)}
             onBlur={() => api.setMetaPrompt(metaPrompt)}
           />
+
+          <button
+            onClick={generatePlans}
+            className="shrink-0 rounded-full bg-violet-400/15 px-4 py-1.5 text-[0.83rem] font-medium text-violet-200 ring-1 ring-inset ring-violet-400/30 transition hover:bg-violet-400/25 active:scale-95"
+          >
+            Generate plans
+          </button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-6 py-8">
-        <h1 className="mb-1 text-2xl font-bold tracking-tight">Concept Factory</h1>
-        <p className="mb-6 text-sm text-slate-500">
-          Paste a list of topics — one per line — to generate a card for each.
-          Every field is editable and saved automatically.
-        </p>
-
-        {/* Bulk paste input */}
-        <div className="mb-8 flex flex-col gap-2">
-          <textarea
-            className="min-h-[9rem] w-full resize-y rounded-xl border border-slate-200 bg-white p-4 font-mono text-sm shadow-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200 placeholder:text-slate-300"
-            placeholder={
-              "Paste topics here, one per line, e.g.\n\nData Structures & Algos\nHash Tables\nTrees\nThreads & Concurrency"
-            }
-            value={paste}
-            onChange={(e) => setPaste(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) addTopics();
-            }}
-          />
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400">
-              {pendingCount > 0
-                ? `${pendingCount} topic${pendingCount === 1 ? "" : "s"} ready · ⌘/Ctrl+Enter to add`
-                : "One topic per line"}
-            </span>
-            <button
-              onClick={addTopics}
-              disabled={pendingCount === 0}
-              className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Generate cards
-            </button>
-          </div>
-        </div>
-
-        {/* Cards header */}
+      <main className="mx-auto max-w-4xl px-6 pb-24 pt-8">
+        {/* Fleet summary: the pipeline at a glance */}
         {!loading && topics.length > 0 && (
-          <div className="mb-4 flex items-center justify-between">
-            <span className="text-sm font-medium text-slate-500">
-              {topics.length} card{topics.length === 1 ? "" : "s"}
-              {anyBusy && (
-                <span className="ml-2 text-indigo-500">· generating…</span>
-              )}
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={generatePlans}
-                className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-700 active:scale-95"
+          <div className="mb-6 flex flex-wrap items-center gap-x-5 gap-y-2">
+            {counts.map((p) => (
+              <span
+                key={p.status}
+                className="flex items-center gap-1.5 font-mono text-[11.5px] text-slate-400"
               >
-                Generate plans
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${p.dot} ${
+                    (p.status === "planning" || p.status === "building") && anyBusy
+                      ? "animate-pulse"
+                      : ""
+                  }`}
+                />
+                {p.n} {p.label}
+              </span>
+            ))}
+            <span className="ml-auto flex items-center gap-4">
+              <button
+                onClick={() => setIntakeOpen((o) => !o)}
+                className="font-mono text-[11.5px] text-slate-500 transition-colors hover:text-violet-300"
+              >
+                + add topics
               </button>
               <button
                 onClick={clearAll}
-                className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 transition hover:bg-red-50 active:scale-95"
+                className="font-mono text-[11.5px] text-slate-600 transition-colors hover:text-rose-300"
               >
-                Clear all
+                clear all
+              </button>
+            </span>
+          </div>
+        )}
+
+        {/* Intake: paste topics (terminal-flavored, collapsible once the
+            board is populated) */}
+        {(intakeOpen || topics.length === 0) && (
+          <div className="mb-8 overflow-hidden rounded-xl border border-white/[0.07] bg-well">
+            <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-2">
+              <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-slate-500">
+                Paste topics · one per line
+              </span>
+              <span className="font-mono text-[11px] text-slate-600">
+                Group &gt; Subgroup &gt; Title | notes
+              </span>
+            </div>
+            <textarea
+              className="block min-h-[8.5rem] w-full resize-y bg-transparent p-4 font-mono text-[0.83rem] leading-relaxed text-slate-300 outline-none placeholder:text-slate-600"
+              placeholder={
+                "Hash Tables\nLinux > Shell > Vim | modal editing basics\nProgramming Languages > Python > Decorators"
+              }
+              value={paste}
+              onChange={(e) => setPaste(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) addTopics();
+              }}
+            />
+            <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-2.5">
+              <span className="font-mono text-[11px] text-slate-600">
+                {pendingCount > 0
+                  ? `${pendingCount} topic${pendingCount === 1 ? "" : "s"} · ⌘↵ to add`
+                  : "deterministic split — no tokens spent"}
+              </span>
+              <button
+                onClick={addTopics}
+                disabled={pendingCount === 0}
+                className="rounded-full bg-violet-400/15 px-4 py-1.5 text-[0.83rem] font-medium text-violet-200 ring-1 ring-inset ring-violet-400/30 transition hover:bg-violet-400/25 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Add {pendingCount > 0 ? pendingCount : ""} card
+                {pendingCount === 1 ? "" : "s"}
               </button>
             </div>
           </div>
         )}
 
-        {/* Cards */}
+        {/* The board */}
         {loading ? (
-          <p className="text-sm text-slate-400">Loading…</p>
+          <p className="font-mono text-sm text-slate-500">loading…</p>
         ) : topics.length === 0 ? (
-          <p className="text-sm text-slate-400">
-            No topics yet — create your first one above.
+          <p className="text-sm text-slate-500">
+            No topics yet. Paste a list above — each line becomes a card.
           </p>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {topics.map((topic) => (
+          <GroupTree
+            topics={topics}
+            renderCard={(topic) => (
               <TopicCard
                 key={topic.id}
                 topic={topic}
@@ -181,8 +225,8 @@ export default function App() {
                 onDelete={() => deleteTopic(topic.id)}
                 onOpenPlan={() => setOpenPlanId(topic.id)}
               />
-            ))}
-          </div>
+            )}
+          />
         )}
       </main>
 

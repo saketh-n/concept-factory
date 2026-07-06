@@ -46,19 +46,19 @@ function BuiltPanel({
 
   return (
     <div className="space-y-5">
-      <div className="rounded-lg bg-emerald-50 p-4 text-sm text-emerald-800">
+      <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-200">
         Claude Code finished building the concept. Open it, request improvements,
         or roll back to an earlier version below.
       </div>
 
       {/* Request an improvement */}
       <div>
-        <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
+        <div className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.15em] text-slate-500">
           Improve this app
         </div>
         <div className="flex gap-2">
           <input
-            className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
+            className="flex-1 rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-violet-400/40"
             placeholder="e.g. add a dark-mode toggle, or two harder levels…"
             value={request}
             onChange={(e) => setRequest(e.target.value)}
@@ -67,7 +67,7 @@ function BuiltPanel({
           <button
             onClick={improve}
             disabled={!request.trim()}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+            className="rounded-lg bg-violet-400/15 px-4 py-2 text-sm font-medium text-violet-200 ring-1 ring-inset ring-violet-400/30 hover:bg-violet-400/25 disabled:opacity-40"
           >
             Improve
           </button>
@@ -76,29 +76,29 @@ function BuiltPanel({
 
       {/* Version history */}
       <div>
-        <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
+        <div className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.15em] text-slate-500">
           Version history
         </div>
         {commits.length === 0 ? (
-          <p className="text-sm text-slate-400">No commits yet.</p>
+          <p className="text-sm text-slate-500">No commits yet.</p>
         ) : (
-          <ol className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+          <ol className="divide-y divide-white/[0.06] rounded-lg border border-white/10">
             {commits.map((c, i) => (
               <li key={c.hash} className="flex items-center justify-between gap-3 px-3 py-2">
                 <div className="min-w-0">
-                  <div className="truncate text-sm text-slate-700">{c.message}</div>
-                  <div className="font-mono text-xs text-slate-400">
+                  <div className="truncate text-sm text-slate-300">{c.message}</div>
+                  <div className="font-mono text-xs text-slate-500">
                     {c.hash.slice(0, 7)} · {relTime(c.date)}
                   </div>
                 </div>
                 {i === 0 ? (
-                  <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                  <span className="shrink-0 rounded-full bg-emerald-400/15 px-2 py-0.5 font-mono text-[11px] font-medium text-emerald-300 ring-1 ring-inset ring-emerald-400/30">
                     current
                   </span>
                 ) : (
                   <button
                     onClick={() => revert(c.hash)}
-                    className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                    className="shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-xs font-medium text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
                   >
                     Revert
                   </button>
@@ -151,7 +151,7 @@ function StreamLog({ topicId }: { topicId: string }) {
   return (
     <div
       ref={boxRef}
-      className="h-[52vh] overflow-y-auto rounded-lg bg-[#0e1017] p-4 font-mono text-[0.8rem] leading-relaxed text-slate-300"
+      className="h-[52vh] overflow-y-auto rounded-lg border border-white/[0.06] bg-ink p-4 font-mono text-[0.8rem] leading-relaxed text-slate-300"
     >
       {lines.length === 0 ? (
         <span className="text-slate-500">Waiting for Claude Code…</span>
@@ -209,20 +209,20 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0e1117] shadow-2xl shadow-black/60"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+        <div className="flex items-center justify-between border-b border-white/[0.07] px-6 py-4">
           <div className="min-w-0">
-            <h2 className="truncate text-lg font-semibold text-slate-900">
+            <h2 className="truncate font-display text-lg font-semibold text-slate-100">
               {topic.title}
             </h2>
-            <p className="text-xs text-slate-400">
+            <p className="font-mono text-[11px] text-slate-500">
               {heading} · workspace/{topic.slug}
             </p>
           </div>
@@ -230,7 +230,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
             {topic.plan && !busy && !editing && (
               <button
                 onClick={() => setEditing(true)}
-                className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                className="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/[0.05]"
               >
                 Edit
               </button>
@@ -238,14 +238,14 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
             {editing && (
               <button
                 onClick={() => setEditing(false)}
-                className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                className="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/[0.05]"
               >
                 Preview
               </button>
             )}
             <button
               onClick={onClose}
-              className="rounded-lg px-2 py-1.5 text-slate-400 hover:bg-slate-100"
+              className="rounded-lg px-2 py-1.5 text-slate-500 hover:bg-white/[0.06] hover:text-slate-300"
             >
               ✕
             </button>
@@ -257,13 +257,13 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
           {busy ? (
             <StreamLog topicId={topic.id} />
           ) : topic.planStatus === "error" ? (
-            <div className="rounded-lg bg-red-50 p-4 text-sm text-red-700">
+            <div className="rounded-lg border border-rose-400/20 bg-rose-400/10 p-4 text-sm text-rose-200">
               <div className="mb-1 font-medium">Something went wrong</div>
               {topic.planError || "Unknown error"}
             </div>
           ) : editing ? (
             <textarea
-              className="h-[52vh] w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-4 font-mono text-sm text-slate-800 outline-none focus:ring-2 focus:ring-indigo-200"
+              className="h-[52vh] w-full resize-none rounded-lg border border-white/10 bg-ink p-4 font-mono text-sm text-slate-200 outline-none focus:border-violet-400/40"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
             />
@@ -276,28 +276,28 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
               </ReactMarkdown>
             </div>
           ) : (
-            <p className="text-sm text-slate-400">No plan yet.</p>
+            <p className="text-sm text-slate-500">No plan yet.</p>
           )}
         </div>
 
         {/* Footer */}
         {built ? (
-          <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4">
-            <span className="text-sm font-medium text-emerald-700">
+          <div className="flex items-center justify-between border-t border-white/[0.07] bg-white/[0.02] px-6 py-4">
+            <span className="text-sm font-medium text-emerald-300">
               ✓ Finished building
             </span>
             <button
               onClick={viewConcept}
-              className="rounded-lg bg-emerald-600 px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-emerald-700 active:scale-95"
+              className="rounded-full bg-emerald-400/15 px-5 py-2 text-sm font-medium text-emerald-200 ring-1 ring-inset ring-emerald-400/40 transition hover:bg-emerald-400/25 active:scale-95"
             >
               View Concept →
             </button>
           </div>
         ) : !busy && topic.plan ? (
-          <div className="space-y-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
+          <div className="space-y-3 border-t border-white/[0.07] bg-white/[0.02] px-6 py-4">
             <div className="flex gap-2">
               <input
-                className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
+                className="flex-1 rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-violet-400/40"
                 placeholder="Ask Claude Code to refine the plan…"
                 value={refine}
                 onChange={(e) => setRefine(e.target.value)}
@@ -306,7 +306,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
               <button
                 onClick={sendRefine}
                 disabled={!refine.trim()}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-white disabled:opacity-40"
+                className="rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-white/[0.05] disabled:opacity-40"
               >
                 Refine
               </button>
@@ -316,18 +316,18 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
                 <button
                   onClick={save}
                   disabled={saving}
-                  className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-50"
+                  className="rounded-lg bg-violet-400/15 px-4 py-2 text-sm font-medium text-violet-200 ring-1 ring-inset ring-violet-400/30 hover:bg-violet-400/25 disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Save edits"}
                 </button>
               ) : (
-                <span className="text-xs text-slate-400">
+                <span className="text-xs text-slate-500">
                   Edit manually, refine with a prompt, or approve to build.
                 </span>
               )}
               <button
                 onClick={build}
-                className="rounded-lg bg-emerald-600 px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-emerald-700 active:scale-95"
+                className="rounded-full bg-emerald-400/15 px-5 py-2 text-sm font-medium text-emerald-200 ring-1 ring-inset ring-emerald-400/40 transition hover:bg-emerald-400/25 active:scale-95"
               >
                 Approve & build
               </button>

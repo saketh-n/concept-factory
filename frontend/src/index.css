@@ -2,28 +2,81 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Rendered plan markdown (Cursor-plan-mode style read view). */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  background: #0a0c10;
+  color: #d7dbe2;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(167, 139, 250, 0.28); /* violet-300 */
+}
+
+/* Quiet scrollbars that match the canvas. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* One consistent focus treatment everywhere. */
+:focus-visible {
+  outline: 2px solid rgba(167, 139, 250, 0.6);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Rendered plan markdown (dark read view). */
 .plan-prose {
-  color: #334155;
+  color: #b6bcc8;
   font-size: 0.925rem;
-  line-height: 1.65;
+  line-height: 1.7;
 }
 .plan-prose h1 {
-  font-size: 1.4rem;
+  font-family: "Space Grotesk", Inter, sans-serif;
+  font-size: 1.35rem;
   font-weight: 700;
-  color: #0f172a;
+  color: #f4f5f7;
   margin: 0 0 0.75rem;
 }
 .plan-prose h2 {
-  font-size: 1.1rem;
+  font-family: "Space Grotesk", Inter, sans-serif;
+  font-size: 1.05rem;
   font-weight: 600;
-  color: #0f172a;
+  color: #f4f5f7;
   margin: 1.4rem 0 0.5rem;
 }
 .plan-prose h3 {
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 600;
-  color: #1e293b;
+  color: #e6e8ed;
   margin: 1rem 0 0.4rem;
 }
 .plan-prose p {
@@ -43,20 +96,31 @@
 .plan-prose li {
   margin: 0.25rem 0;
 }
+.plan-prose li::marker {
+  color: #6b7280;
+}
 .plan-prose strong {
-  color: #0f172a;
+  color: #f4f5f7;
   font-weight: 600;
 }
+.plan-prose a {
+  color: #c4b5fd;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .plan-prose code {
-  background: #f1f5f9;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 0.3rem;
   padding: 0.1rem 0.35rem;
-  font-size: 0.85em;
-  color: #4338ca;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.82em;
+  color: #c4b5fd;
 }
 .plan-prose pre {
-  background: #0e1017;
-  color: #e2e8f0;
+  background: #0e1117;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #d7dbe2;
   border-radius: 0.6rem;
   padding: 0.9rem 1rem;
   overflow-x: auto;
@@ -64,12 +128,13 @@
 }
 .plan-prose pre code {
   background: none;
+  border: none;
   color: inherit;
   padding: 0;
 }
 .plan-prose hr {
   border: 0;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
   margin: 1.25rem 0;
 }
 .plan-prose table {
@@ -79,7 +144,11 @@
 }
 .plan-prose th,
 .plan-prose td {
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   padding: 0.4rem 0.6rem;
   text-align: left;
+}
+.plan-prose th {
+  color: #e6e8ed;
+  background: rgba(255, 255, 255, 0.03);
 }

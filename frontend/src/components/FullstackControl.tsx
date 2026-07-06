@@ -47,7 +47,7 @@ export default function FullstackControl({ slug }: { slug: string }) {
 
   if (app.status === "running") {
     return (
-      <div className="flex items-center justify-between rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white">
+      <div className="flex items-center justify-between rounded-lg bg-emerald-400/15 px-3 py-2 font-mono text-[11.5px] font-medium text-emerald-200 ring-1 ring-inset ring-emerald-400/30">
         <span>App running</span>
         <span className="flex items-center gap-3">
           <a href={app.url} target="_blank" rel="noreferrer" className="hover:opacity-80">
@@ -63,7 +63,7 @@ export default function FullstackControl({ slug }: { slug: string }) {
 
   if (starting) {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-600">
+      <div className="flex items-center gap-2 rounded-lg bg-violet-400/10 px-3 py-2 font-mono text-[11.5px] font-medium text-violet-300 ring-1 ring-inset ring-violet-400/25">
         <span className="h-2 w-2 animate-pulse rounded-full bg-current" />
         Starting app… (first launch installs deps)
       </div>
@@ -72,7 +72,7 @@ export default function FullstackControl({ slug }: { slug: string }) {
 
   if (app.status === "error") {
     return (
-      <div className="flex items-center justify-between rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-600">
+      <div className="flex items-center justify-between rounded-lg bg-rose-400/10 px-3 py-2 font-mono text-[11.5px] font-medium text-rose-300 ring-1 ring-inset ring-rose-400/25">
         <span className="mr-2 truncate" title={app.error}>
           {app.error || "Failed to launch"}
         </span>
@@ -87,7 +87,7 @@ export default function FullstackControl({ slug }: { slug: string }) {
     <button
       onClick={launch}
       disabled={busy}
-      className="flex items-center justify-between rounded-lg bg-slate-800 px-3 py-2 text-xs font-medium text-white transition hover:bg-slate-900 disabled:opacity-50"
+      className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 font-mono text-[11.5px] font-medium text-slate-300 transition hover:border-violet-400/30 hover:text-violet-200 disabled:opacity-50"
     >
       <span>Full-stack concept</span>
       <span>{busy ? "Launching…" : "Launch app →"}</span>

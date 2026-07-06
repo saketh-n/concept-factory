@@ -65,6 +65,9 @@ class Topic(BaseModel):
     sessionId: str = ""
     planError: str = ""
     fullstack: bool = False  # runs its own backend; launched, not statically served
+    # Hierarchy as a materialized path, e.g. ["Linux", "Shell"]. Groups are
+    # derived from these — no separate folder entities exist anywhere.
+    path: List[str] = Field(default_factory=list)
 
 
 class TopicCreate(BaseModel):
@@ -79,6 +82,7 @@ class TopicUpdate(BaseModel):
     title: Optional[str] = None
     blurb: Optional[str] = None
     notes: Optional[str] = None
+    path: Optional[List[str]] = None
 
 
 class MetaPromptUpdate(BaseModel):
@@ -204,17 +208,22 @@ def save_state(state: State) -> None:
 # Leading list markers we strip so pasted lists come in clean: "- ", "* ",
 # "• ", "1. ", "2) ", etc. Splitting on newlines is fully deterministic, so no
 # LLM is needed to separate a pasted list into individual topics.
+#
+# Line grammar:   [Group > Subgroup > ] Title [ | notes ]
+# e.g.            Linux > Shell > Vim & Remote Editing | modal editing, ssh
 _MARKER_RE = re.compile(r"^\s*(?:[-*•·‣▪]|\d+[.)])\s+")
 
 
-def parse_topics(text: str) -> List[tuple[str, str]]:
-    items: List[tuple[str, str]] = []
+def parse_topics(text: str) -> List[tuple[List[str], str, str]]:
+    items: List[tuple[List[str], str, str]] = []
     for line in text.splitlines():
         cleaned = _MARKER_RE.sub("", line).strip()
         if not cleaned:
             continue
-        title, _, notes = cleaned.partition("|")
-        items.append((title.strip(), notes.strip()))
+        head, _, notes = cleaned.partition("|")
+        *path, title = [part.strip() for part in head.split(">")]
+        if title:
+            items.append(([p for p in path if p], title, notes.strip()))
     return items
 
 
@@ -264,12 +273,12 @@ def create_topics_bulk(payload: BulkCreate) -> List[Topic]:
     with _lock:
         existing = {t.title.strip().lower() for t in state.topics}
         created: List[Topic] = []
-        for title, notes in parse_topics(payload.text):
+        for path, title, notes in parse_topics(payload.text):
             key = title.lower()
             if key in existing:
                 continue
             existing.add(key)
-            topic = Topic(title=title, notes=notes)
+            topic = Topic(title=title, notes=notes, path=path)
             state.topics.append(topic)
             created.append(topic)
         if created:
