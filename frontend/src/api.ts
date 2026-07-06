@@ -18,6 +18,8 @@ export interface Topic {
   sessionId: string;
   planError: string;
   fullstack: boolean;
+  /** Human has reviewed the built concept. Only meaningful once built. */
+  reviewed: boolean;
   /** Hierarchy as a materialized path, e.g. ["Linux", "Shell"]. */
   path: string[];
 }

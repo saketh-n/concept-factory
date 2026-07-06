@@ -65,6 +65,7 @@ class Topic(BaseModel):
     sessionId: str = ""
     planError: str = ""
     fullstack: bool = False  # runs its own backend; launched, not statically served
+    reviewed: bool = False  # human has reviewed the built concept; only meaningful once built
     # Hierarchy as a materialized path, e.g. ["Linux", "Shell"]. Groups are
     # derived from these — no separate folder entities exist anywhere.
     path: List[str] = Field(default_factory=list)
@@ -82,6 +83,7 @@ class TopicUpdate(BaseModel):
     title: Optional[str] = None
     blurb: Optional[str] = None
     notes: Optional[str] = None
+    reviewed: Optional[bool] = None
     path: Optional[List[str]] = None
 
 

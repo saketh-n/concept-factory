@@ -14,6 +14,7 @@ interface TreeNode {
   topics: Topic[];
   count: number; // topics in this whole subtree
   built: number; // built topics in this whole subtree
+  reviewed: number; // reviewed topics in this whole subtree
 }
 
 function buildTree(topics: Topic[]): TreeNode {
@@ -24,6 +25,7 @@ function buildTree(topics: Topic[]): TreeNode {
     topics: [],
     count: 0,
     built: 0,
+    reviewed: 0,
   };
   for (const t of topics) {
     let node = root;
@@ -37,6 +39,7 @@ function buildTree(topics: Topic[]): TreeNode {
           topics: [],
           count: 0,
           built: 0,
+          reviewed: 0,
         };
         node.children.push(child); // insertion order = outline order
       }
@@ -44,17 +47,20 @@ function buildTree(topics: Topic[]): TreeNode {
     }
     node.topics.push(t);
   }
-  const tally = (n: TreeNode): [number, number] => {
+  const tally = (n: TreeNode): [number, number, number] => {
     let count = n.topics.length;
     let built = n.topics.filter((t) => t.planStatus === "built").length;
+    let reviewed = n.topics.filter((t) => t.reviewed).length;
     for (const c of n.children) {
-      const [cc, cb] = tally(c);
+      const [cc, cb, cr] = tally(c);
       count += cc;
       built += cb;
+      reviewed += cr;
     }
     n.count = count;
     n.built = built;
-    return [count, built];
+    n.reviewed = reviewed;
+    return [count, built, reviewed];
   };
   tally(root);
   return root;
@@ -69,6 +75,41 @@ function collectKeys(node: TreeNode, acc: string[] = []): string[] {
 }
 
 const LS_KEY = "conceptFactory.collapsedGroups";
+
+/**
+ * Review-progress readout: "X/Y reviewed" beside a bar whose fill both grows
+ * and shifts hue red → green as more of the subtree is signed off. Y is the
+ * total card count, so an all-unbuilt group reads 0/Y (fully red).
+ */
+function ReviewBar({
+  reviewed,
+  count,
+  built,
+}: {
+  reviewed: number;
+  count: number;
+  built: number;
+}) {
+  const frac = count > 0 ? reviewed / count : 0;
+  const hue = Math.round(frac * 140); // 0 = red, 140 = green
+  const fill = `hsl(${hue} 68% 47%)`;
+  return (
+    <span
+      className="flex items-center gap-2"
+      title={`${reviewed} reviewed · ${built} built · ${count} total`}
+    >
+      <span className="font-mono text-[11px] tabular-nums text-slate-500">
+        {reviewed}/{count} reviewed
+      </span>
+      <span className="h-1.5 w-20 overflow-hidden rounded-full bg-white/10">
+        <span
+          className="block h-full rounded-full transition-all duration-500"
+          style={{ width: `${Math.round(frac * 100)}%`, backgroundColor: fill }}
+        />
+      </span>
+    </span>
+  );
+}
 
 function Group({
   node,
@@ -105,9 +146,7 @@ function Group({
         >
           {node.name}
         </span>
-        <span className="font-mono text-[11px] text-slate-500">
-          {node.built > 0 ? `${node.built}/${node.count} built` : node.count}
-        </span>
+        <ReviewBar reviewed={node.reviewed} count={node.count} built={node.built} />
       </button>
 
       {!isCollapsed && (

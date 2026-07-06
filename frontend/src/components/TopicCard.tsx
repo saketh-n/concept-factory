@@ -75,6 +75,15 @@ export default function TopicCard({
   const [draft, setDraft] = useState(topic);
   const [notesOpen, setNotesOpen] = useState(false);
   const status = PLAN_META[topic.planStatus];
+  const built = topic.planStatus === "built";
+
+  // Once built, the card carries a second axis — review state — as a whole-card
+  // tint: rose until a human signs off, emerald once reviewed.
+  const cardTint = built
+    ? topic.reviewed
+      ? "border-emerald-400/25 bg-emerald-400/[0.04] hover:border-emerald-400/35 hover:bg-emerald-400/[0.06]"
+      : "border-rose-400/25 bg-rose-400/[0.04] hover:border-rose-400/35 hover:bg-rose-400/[0.06]"
+    : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.14] hover:bg-white/[0.03]";
   const clickable = ["ready", "planning", "building", "built", "error"].includes(
     topic.planStatus
   );
@@ -113,7 +122,7 @@ export default function TopicCard({
             : null;
 
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.02] transition-colors hover:border-white/[0.14] hover:bg-white/[0.03]">
+    <div className={`group relative overflow-hidden rounded-xl border transition-colors ${cardTint}`}>
       {/* Signature: the status rail. Color = lifecycle state; pulses while a
           Claude Code instance is live on this topic. */}
       <span
@@ -146,6 +155,24 @@ export default function TopicCard({
                 <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current align-middle" />
               )}
               {status.label}
+            </button>
+          )}
+
+          {built && (
+            <button
+              onClick={() => onChange({ reviewed: !topic.reviewed })}
+              className={`shrink-0 rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium uppercase tracking-wide ring-1 ring-inset transition ${
+                topic.reviewed
+                  ? "bg-emerald-400/15 text-emerald-200 ring-emerald-400/35 hover:brightness-110"
+                  : "bg-rose-400/10 text-rose-300 ring-rose-400/30 hover:bg-rose-400/20"
+              }`}
+              title={
+                topic.reviewed
+                  ? "Reviewed — click to unmark"
+                  : "Not yet reviewed — click to mark reviewed"
+              }
+            >
+              {topic.reviewed ? "✓ Reviewed" : "Needs review"}
             </button>
           )}
 
