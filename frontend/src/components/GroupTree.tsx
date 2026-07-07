@@ -77,9 +77,11 @@ function collectKeys(node: TreeNode, acc: string[] = []): string[] {
 const LS_KEY = "conceptFactory.collapsedGroups";
 
 /**
- * Review-progress readout: "X/Y reviewed" beside a bar whose fill both grows
- * and shifts hue red → green as more of the subtree is signed off. Y is the
- * total card count, so an all-unbuilt group reads 0/Y (fully red).
+ * Progress readout: two clean bordered badges beside a group heading.
+ *   • "X/Y Reviewed" — keeps a slim bar whose fill grows and shifts hue
+ *     red → green as more of the subtree is signed off.
+ *   • "X/Y Built" — a matching badge (no bar) for how many cards are built.
+ * Y is the total card count, so an all-unbuilt group reads 0/Y.
  */
 function ReviewBar({
   reviewed,
@@ -94,18 +96,28 @@ function ReviewBar({
   const hue = Math.round(frac * 140); // 0 = red, 140 = green
   const fill = `hsl(${hue} 68% 47%)`;
   return (
-    <span
-      className="flex items-center gap-2"
-      title={`${reviewed} reviewed · ${built} built · ${count} total`}
-    >
-      <span className="font-mono text-[11px] tabular-nums text-slate-500">
-        {reviewed}/{count} reviewed
+    <span className="flex items-center gap-2">
+      <span
+        className="inline-flex items-center gap-2 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1"
+        title={`${reviewed} of ${count} reviewed`}
+      >
+        <span className="font-mono text-[11px] font-medium tabular-nums text-emerald-200/90">
+          {reviewed}/{count} Reviewed
+        </span>
+        <span className="h-1.5 w-14 overflow-hidden rounded-full bg-white/10">
+          <span
+            className="block h-full rounded-full transition-all duration-500"
+            style={{ width: `${Math.round(frac * 100)}%`, backgroundColor: fill }}
+          />
+        </span>
       </span>
-      <span className="h-1.5 w-20 overflow-hidden rounded-full bg-white/10">
-        <span
-          className="block h-full rounded-full transition-all duration-500"
-          style={{ width: `${Math.round(frac * 100)}%`, backgroundColor: fill }}
-        />
+      <span
+        className="inline-flex items-center rounded-full border border-sky-400/25 bg-sky-400/10 px-2.5 py-1"
+        title={`${built} of ${count} built`}
+      >
+        <span className="font-mono text-[11px] font-medium tabular-nums text-sky-200/90">
+          {built}/{count} Built
+        </span>
       </span>
     </span>
   );
