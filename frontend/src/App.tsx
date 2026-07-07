@@ -34,6 +34,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [openPlanId, setOpenPlanId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   const anyBusy = topics.some((t) => BUSY.includes(t.planStatus));
   const openPlan = topics.find((t) => t.id === openPlanId) ?? null;
@@ -103,6 +104,19 @@ export default function App() {
     n: topics.filter((t) => t.planStatus === p.status).length,
   })).filter((p) => p.n > 0);
 
+  // Live text filter across a card's title, blurb, notes, and group path.
+  // Space-separated terms are AND-ed so "python decorator" narrows further.
+  const query = search.trim().toLowerCase();
+  const terms = query.split(/\s+/).filter(Boolean);
+  const filteredTopics = terms.length
+    ? topics.filter((t) => {
+        const haystack = [t.title, t.blurb, t.notes, ...t.path]
+          .join(" ")
+          .toLowerCase();
+        return terms.every((term) => haystack.includes(term));
+      })
+    : topics;
+
   return (
     <div className="min-h-screen">
       {/* Top bar: wordmark · meta prompt · actions */}
@@ -150,6 +164,32 @@ export default function App() {
               </span>
             ))}
             <span className="ml-auto flex items-center gap-4">
+              <span className="relative flex items-center">
+                <span
+                  className="pointer-events-none absolute left-2.5 text-slate-600"
+                  aria-hidden
+                >
+                  ⌕
+                </span>
+                <input
+                  className="w-44 rounded-full border border-white/[0.09] bg-well py-1 pl-7 pr-7 font-mono text-[11.5px] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:w-56 focus:border-violet-400/40"
+                  placeholder="Search cards…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setSearch("");
+                  }}
+                />
+                {search && (
+                  <button
+                    onClick={() => setSearch("")}
+                    title="Clear search"
+                    className="absolute right-2.5 text-slate-500 transition-colors hover:text-slate-300"
+                  >
+                    ✕
+                  </button>
+                )}
+              </span>
               <button
                 onClick={() => setIntakeOpen((o) => !o)}
                 className="font-mono text-[11.5px] text-slate-500 transition-colors hover:text-violet-300"
@@ -214,9 +254,20 @@ export default function App() {
           <p className="text-sm text-slate-500">
             No topics yet. Paste a list above — each line becomes a card.
           </p>
+        ) : filteredTopics.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            No cards match{" "}
+            <span className="font-mono text-slate-400">“{search.trim()}”</span>.{" "}
+            <button
+              onClick={() => setSearch("")}
+              className="text-violet-300 underline-offset-2 hover:underline"
+            >
+              Clear search
+            </button>
+          </p>
         ) : (
           <GroupTree
-            topics={topics}
+            topics={filteredTopics}
             renderCard={(topic) => (
               <TopicCard
                 key={topic.id}
