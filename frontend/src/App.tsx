@@ -35,6 +35,13 @@ export default function App() {
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [openPlanId, setOpenPlanId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [consolidating, setConsolidating] = useState(false);
+  // Merge choreography: source cards collapse away (exiting → hidden) while the
+  // new consolidated card rises in and streams its plan.
+  const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  const [mergeTargetId, setMergeTargetId] = useState<string | null>(null);
 
   const anyBusy = topics.some((t) => BUSY.includes(t.planStatus));
   const openPlan = topics.find((t) => t.id === openPlanId) ?? null;
@@ -92,6 +99,55 @@ export default function App() {
     setTopics((prev) => prev.filter((t) => t.id !== id));
   };
 
+  const toggleSelect = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const consolidate = async () => {
+    const ids = [...selected];
+    if (ids.length < 2) return;
+    setConsolidating(true);
+    try {
+      const created = await api.consolidateTopics(ids);
+      // 1) Show the new card immediately with its entrance animation, and start
+      //    the sources collapsing away.
+      setTopics((prev) => [...prev, created]);
+      setMergeTargetId(created.id);
+      setExitingIds(new Set(ids));
+      setSelected(new Set());
+      // 2) After the collapse animation, remove the sources from the board and
+      //    open the plan modal so the Claude Code run streams live.
+      window.setTimeout(() => {
+        setHiddenIds((prev) => new Set([...prev, ...ids]));
+        setExitingIds(new Set());
+        setOpenPlanId(created.id);
+      }, 620);
+    } catch (e) {
+      alert(`Consolidation failed: ${(e as Error).message}`);
+    } finally {
+      setConsolidating(false);
+    }
+  };
+
+  // Resolve the merge once the new card settles: on success the sources are
+  // already gone server-side (drop the hidden veil); on error, restore them.
+  useEffect(() => {
+    if (!mergeTargetId) return;
+    const target = topics.find((t) => t.id === mergeTargetId);
+    if (!target) return;
+    if (target.planStatus === "error") {
+      setHiddenIds(new Set());
+      setMergeTargetId(null);
+    } else if (target.planStatus === "ready" || target.planStatus === "built") {
+      setHiddenIds(new Set());
+      setMergeTargetId(null);
+    }
+  }, [topics, mergeTargetId]);
+
   const clearAll = async () => {
     if (!confirm(`Delete all ${topics.length} cards? This can't be undone.`))
       return;
@@ -104,18 +160,22 @@ export default function App() {
     n: topics.filter((t) => t.planStatus === p.status).length,
   })).filter((p) => p.n > 0);
 
+  // Hide source cards that have merged away (or are mid-collapse the moment
+  // they finish animating) so they vanish cleanly into the consolidated card.
+  const boardTopics = topics.filter((t) => !hiddenIds.has(t.id));
+
   // Live text filter across a card's title, blurb, notes, and group path.
   // Space-separated terms are AND-ed so "python decorator" narrows further.
   const query = search.trim().toLowerCase();
   const terms = query.split(/\s+/).filter(Boolean);
   const filteredTopics = terms.length
-    ? topics.filter((t) => {
+    ? boardTopics.filter((t) => {
         const haystack = [t.title, t.blurb, t.notes, ...t.path]
           .join(" ")
           .toLowerCase();
         return terms.every((term) => haystack.includes(term));
       })
-    : topics;
+    : boardTopics;
 
   return (
     <div className="min-h-screen">
@@ -134,6 +194,21 @@ export default function App() {
             onChange={(e) => setMetaPrompt(e.target.value)}
             onBlur={() => api.setMetaPrompt(metaPrompt)}
           />
+
+          <button
+            onClick={consolidate}
+            disabled={selected.size < 2 || consolidating}
+            title={
+              selected.size < 2
+                ? "Tick the checkboxes on two or more plan-ready cards to merge them"
+                : `Merge the ${selected.size} selected plans into one`
+            }
+            className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-4 py-1.5 text-[0.83rem] font-medium text-slate-300 transition hover:bg-white/[0.08] active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 enabled:border-violet-400/30 enabled:bg-violet-400/10 enabled:text-violet-200 enabled:hover:bg-violet-400/20"
+          >
+            {consolidating
+              ? "Consolidating…"
+              : `Consolidate${selected.size >= 2 ? ` (${selected.size})` : ""}`}
+          </button>
 
           <button
             onClick={generatePlans}
@@ -275,6 +350,10 @@ export default function App() {
                 onChange={(patch) => updateTopic(topic.id, patch)}
                 onDelete={() => deleteTopic(topic.id)}
                 onOpenPlan={() => setOpenPlanId(topic.id)}
+                selected={selected.has(topic.id)}
+                onToggleSelect={() => toggleSelect(topic.id)}
+                merging={exitingIds.has(topic.id)}
+                entering={topic.id === mergeTargetId}
               />
             )}
           />
@@ -288,6 +367,7 @@ export default function App() {
           onClose={() => setOpenPlanId(null)}
         />
       )}
+
     </div>
   );
 }

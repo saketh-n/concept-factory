@@ -94,6 +94,13 @@ export const api = {
   generateOnePlan: (id: string) =>
     fetch(`/api/topics/${id}/plan`, { method: "POST" }).then(json<Topic>),
 
+  consolidateTopics: (ids: string[]) =>
+    fetch("/api/topics/consolidate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }).then(json<Topic>),
+
   refinePlan: (id: string, prompt: string) =>
     fetch(`/api/topics/${id}/plan/refine`, {
       method: "POST",

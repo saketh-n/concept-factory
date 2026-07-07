@@ -294,6 +294,75 @@ def refine_prompt(feedback: str) -> str:
     )
 
 
+def plan_title(plan_text: str) -> Optional[str]:
+    """Pull a display title from a PLAN.md's first H1 (`# Foo — Plan` → `Foo`)."""
+    for line in plan_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            title = stripped[2:].strip()
+            title = re.sub(r"\s*[—–-]\s*Plan\s*$", "", title).strip()
+            return title or None
+    return None
+
+
+def consolidate_prompt(plans: List[tuple], meta_prompt: str) -> str:
+    """Synthesize several ready plans into ONE unified learning-app plan.
+
+    ``plans`` is a list of (title, plan_markdown) for the selected topics.
+    """
+    meta = (
+        f"\nBOARD INTENT (meta prompt steering the whole set): {meta_prompt.strip()}"
+        if meta_prompt.strip()
+        else ""
+    )
+    n = len(plans)
+    blocks = "\n\n".join(
+        f"===== SOURCE PLAN {i} — {title} =====\n{(plan or '').strip()}"
+        for i, (title, plan) in enumerate(plans, 1)
+    )
+    return f"""You are CONSOLIDATING {n} separate single-concept learning micro-app \
+plans into ONE unified plan. Each source below is a plan for its own tiny \
+Vite + React + TypeScript + Tailwind learning app (a LEARN pocket-guide tab and a \
+TEST game tab). Your job is to design a SINGLE app that teaches and tests ALL of \
+these topics together as one coherent concept — not a menu of separate apps bolted \
+together. Do NOT write app code. Your only deliverable is `{PLAN_FILE}` in your \
+current working directory.{meta}
+
+{blocks}
+
+SYNTHESIZE, don't concatenate:
+- Find the through-line that connects these topics and lead with it — the unified \
+"aha" that makes learning them together stronger than learning them apart.
+- Merge overlapping sub-concepts; keep every distinct one. Nothing important from \
+any source plan should be dropped.
+- Fold the source TEST games into ONE game whose levels span all the topics, each \
+level still tagged with exactly one sub-concept key (reuse/rename the source keys \
+so results break down by category across the merged set).
+- Pick ONE accent Tailwind color family for the unified app.
+- Keep it about the length of a SINGLE source plan — slightly longer is fine to \
+cover the extra ground, but it must stay a crisp, skimmable plan, not the sum of \
+all inputs. Tighten aggressively.
+
+`{PLAN_FILE}` MUST be markdown with exactly these sections (same house pattern as a \
+single-topic plan):
+1. `# <Unified Title> — Plan`
+2. **Repo name** — kebab-case, 1-3 words, concrete.
+3. **One-line description** — the GitHub-style tagline for the combined app.
+4. **Learning angle** — 2-3 sentences: the unifying mental model and why teaching \
+these together sticks.
+5. **Learn page** — 4-6 numbered section titles covering the merged material, each \
+with a one-line note on its interactive visualization or worked example.
+6. **Test game** — an *italicized name*, a one-paragraph mechanic pitch, why that \
+mechanic fits the combined concept, the full list of sub-concept keys the levels \
+cover (spanning all sources), and 3 example levels each written as: prompt -> \
+expected answer -> teaching reason for a plausible wrong answer.
+7. **Accent color** — one Tailwind family (not amber).
+8. **Risks / open questions** — anything a human should decide before building, \
+including any source material that was hard to unify.
+
+Write ONLY `{PLAN_FILE}`. Do not scaffold code or create other files."""
+
+
 # --- Streaming event → human-readable line ---------------------------------
 def _describe_tool(name: str, inp: dict) -> str:
     if name in ("Write", "Edit", "MultiEdit"):

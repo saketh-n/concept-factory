@@ -53,6 +53,51 @@ body,
   }
 }
 
+/* Consolidation: source cards collapse away as they merge into the new card. */
+@keyframes merge-out {
+  0% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    max-height: 400px;
+  }
+  40% {
+    opacity: 0.35;
+    transform: scale(0.97) translateY(-4px);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.9) translateY(-14px);
+    max-height: 0;
+    margin-bottom: -0.5rem;
+  }
+}
+.merge-out {
+  animation: merge-out 0.6s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* The freshly-minted consolidated card rises in with a brief violet halo. */
+@keyframes merge-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.94) translateY(10px);
+    box-shadow: 0 0 0 0 rgba(167, 139, 250, 0);
+  }
+  55% {
+    opacity: 1;
+    box-shadow: 0 0 34px 2px rgba(167, 139, 250, 0.35);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    box-shadow: 0 0 0 0 rgba(167, 139, 250, 0);
+  }
+}
+.merge-in {
+  animation: merge-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 /* Rendered plan markdown (dark read view). */
 .plan-prose {
   color: #b6bcc8;

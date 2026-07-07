@@ -7,6 +7,14 @@ interface Props {
   onChange: (patch: Partial<Omit<Topic, "id">>) => void;
   onDelete: () => void;
   onOpenPlan: () => void;
+  /** This card is currently selected for consolidation. */
+  selected?: boolean;
+  /** Toggle this card's selection. */
+  onToggleSelect?: () => void;
+  /** Playing the "collapse away into the merged card" animation. */
+  merging?: boolean;
+  /** The freshly-created consolidated card — plays an entrance animation. */
+  entering?: boolean;
 }
 
 /** Lifecycle → color. In a control room, color means state, nothing else. */
@@ -71,11 +79,17 @@ export default function TopicCard({
   onChange,
   onDelete,
   onOpenPlan,
+  selected = false,
+  onToggleSelect,
+  merging = false,
+  entering = false,
 }: Props) {
   const [draft, setDraft] = useState(topic);
   const [notesOpen, setNotesOpen] = useState(false);
   const status = PLAN_META[topic.planStatus];
   const built = topic.planStatus === "built";
+  // Only plan-ready cards can be folded into a consolidated plan.
+  const selectable = topic.planStatus === "ready";
 
   // Once built, the card carries a second axis — review state — as a whole-card
   // tint: rose until a human signs off, emerald once reviewed.
@@ -122,7 +136,11 @@ export default function TopicCard({
             : null;
 
   return (
-    <div className={`group relative overflow-hidden rounded-xl border transition-colors ${cardTint}`}>
+    <div
+      className={`group relative overflow-hidden rounded-xl border transition-colors ${cardTint} ${
+        selected ? "ring-2 ring-inset ring-violet-400/60" : ""
+      } ${merging ? "merge-out" : ""} ${entering ? "merge-in" : ""}`}
+    >
       {/* Signature: the status rail. Color = lifecycle state; pulses while a
           Claude Code instance is live on this topic. */}
       <span
@@ -133,8 +151,17 @@ export default function TopicCard({
       />
 
       <div className="flex flex-col gap-2 py-3 pl-5 pr-4">
-        {/* Row 1: title · status · action · delete */}
+        {/* Row 1: [select] title · status · action · delete */}
         <div className="flex items-center gap-3">
+          {selectable && onToggleSelect && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onToggleSelect}
+              title="Select to consolidate this plan with others"
+              className="h-4 w-4 shrink-0 cursor-pointer accent-violet-400"
+            />
+          )}
           <input
             className="min-w-0 flex-1 bg-transparent font-display text-[0.95rem] font-semibold text-slate-100 outline-none placeholder:text-slate-600"
             value={draft.title}
