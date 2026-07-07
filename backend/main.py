@@ -109,6 +109,16 @@ def _reconcile(topic: Topic) -> str:
     if topic.fullstack:
         return topic.planStatus  # launched on demand, not backed by a dist/
     if agent.is_built(topic.slug):
+        # Auto-heal bundles built with the wrong base (externally-prebuilt
+        # concepts never went through finalize_build; a failed improve can
+        # also leave root-based assets behind). Rebuild so assets resolve
+        # under /concepts/<slug>/ instead of 404-ing.
+        if not agent.dist_base_ok(topic.slug):
+            agent.finalize_build(
+                agent.topic_dir(topic.slug),
+                f"/concepts/{topic.slug}/",
+                lambda _l: None,
+            )
         return "built"
     # No bundle on disk: any mid-flight or stale "built" status is orphaned.
     if topic.planStatus in _TRANSIENT or topic.planStatus == "built":
@@ -503,6 +513,11 @@ def _improve_job(topic_id: str, request: str) -> None:
         timeout=agent.BUILD_TIMEOUT,
     )
     if result["error"]:
+        # The agent's own `npm run build` (default base '/') may have already
+        # overwritten the served dist during its verification. Re-finalize with
+        # the correct base so a failed improve never leaves a 404-ing bundle.
+        if not fullstack:
+            agent.finalize_build(cwd, f"/concepts/{slug}/", emit)
         _set(topic_id, planStatus="error", planError=result["error"],
              sessionId=result["sessionId"] or "")
         return

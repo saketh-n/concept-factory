@@ -211,6 +211,41 @@ def _git_ensure_repo(cwd: Path) -> None:
     gi.write_text("\n".join(lines) + "\n")
 
 
+def seed_history(dest: Path, src: Optional[Path]) -> None:
+    """Adopt a concept's real git history into its working copy.
+
+    The workspace/runtime copies were made without .git, so review/revert
+    would otherwise operate on a phantom timeline. This copies the source
+    repo's .git in ONCE, then never touches it again.
+
+    Invariant: if ``dest`` already has history, do nothing — we never replace
+    or rewrite an existing timeline (that was the old overwriting bug). A
+    missing or history-less ``src`` is tolerated: the concept simply starts
+    its history at the first backend commit.
+    """
+    if (dest / ".git").exists():
+        return  # already has a timeline — never overwrite it
+    if not src or not (src / ".git").exists():
+        return  # nothing to adopt; git_commit will init on first snapshot
+    shutil.copytree(src / ".git", dest / ".git")
+    # The copied index reflects src's tree, not dest's files. A mixed reset
+    # realigns HEAD/index/worktree without discarding any local changes.
+    _git(["reset", "--mixed", "-q", "HEAD"], dest)
+
+
+def dist_base_ok(slug: str) -> bool:
+    """True if the built bundle references the /concepts/<slug>/ asset base.
+
+    A bundle built with Vite's default base ('/') will 404 its assets when
+    served from the sub-path, so a False here is the signal that the bundle
+    needs re-finalizing.
+    """
+    index = WORKSPACE / slug / "dist" / "index.html"
+    if not index.is_file():
+        return False
+    return f"/concepts/{slug}/assets" in index.read_text()
+
+
 def git_commit(cwd: Path, message: str) -> bool:
     """Snapshot the app's source as a commit (inits the repo on first use).
 

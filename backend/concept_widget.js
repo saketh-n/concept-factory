@@ -204,7 +204,10 @@
       commits = r.commits || [];
       if (r.status === "building") startPolling("Claude Code is working…");
       render();
-    }).catch(function () {});
+    }).catch(function () {
+      errMsg = "Couldn't load version history (backend error).";
+      render();
+    });
   }
 
   function sendImprove() {
