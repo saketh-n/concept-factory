@@ -259,6 +259,12 @@ def git_commit(cwd: Path, message: str) -> bool:
     return True
 
 
+# Auto-generated maintenance commits (reverts, protective snapshots) that the
+# system creates for bookkeeping — not real user-facing changes, so they're
+# hidden from the Versions history.
+_INTERNAL_COMMIT_PREFIXES = ("Revert to ", "Snapshot before ")
+
+
 def git_log(cwd: Path, n: int = 100) -> list:
     if not (cwd / ".git").exists():
         return []
@@ -266,8 +272,12 @@ def git_log(cwd: Path, n: int = 100) -> list:
     commits = []
     for line in out.splitlines():
         parts = line.split("\x1f")
-        if len(parts) == 3:
-            commits.append({"hash": parts[0], "message": parts[1], "date": parts[2]})
+        if len(parts) != 3:
+            continue
+        message = parts[1]
+        if message.startswith(_INTERNAL_COMMIT_PREFIXES):
+            continue
+        commits.append({"hash": parts[0], "message": message, "date": parts[2]})
     return commits
 
 

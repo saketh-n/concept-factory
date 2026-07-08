@@ -550,14 +550,6 @@ def _improve_job(topic_id: str, request: str) -> None:
     _log_reset(topic_id)
     emit = lambda line: _log_append(topic_id, line)
     cwd = _work_dir(topic)
-    # Guarantee a restorable baseline BEFORE Claude Code touches anything. This
-    # appends to the concept's real history (never replaces it), so a bad change
-    # can always be rolled back.
-    agent.git_commit(cwd, "Snapshot before improvement")
-    if not (cwd / ".git").exists():
-        _set(topic_id, planStatus="error",
-             planError="Could not create a git snapshot to protect your work; nothing was changed.")
-        return
     emit(f"Requesting improvement: {request}")
     result = agent.run_claude(
         agent.improve_prompt(request),
