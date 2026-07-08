@@ -614,6 +614,14 @@ def _revert_job(topic_id: str, commit_hash: str) -> None:
         emit("✓ Reverted. Relaunch the concept to see this version.")
         return
 
+    # The target's servable bundle was restored straight from git — just serve it.
+    # No Claude Code, no npm rebuild; switching a version is a pure git restore.
+    if agent.has_committed_dist(cwd, commit_hash):
+        _set(topic_id, planStatus="built", planError="")
+        emit("✓ Now serving this version.")
+        return
+
+    # Older version saved before bundles were versioned — rebuild it once.
     emit("Rebuilding the servable bundle…")
     if agent.finalize_build(cwd, f"/concepts/{slug}/", emit):
         _set(topic_id, planStatus="built", planError="")
@@ -773,7 +781,8 @@ def topic_history(topic_id: str) -> dict:
         topic = _find(topic_id)
         if not topic or not topic.slug:
             raise HTTPException(status_code=404, detail="Topic not found")
-    return {"commits": agent.git_log(_work_dir(topic))}
+    cwd = _work_dir(topic)
+    return {"commits": agent.git_log(cwd), "served": agent.served_hash(cwd)}
 
 
 @app.post("/api/topics/{topic_id}/revert", response_model=Topic)
@@ -848,7 +857,8 @@ def concept_history(slug: str) -> dict:
         if not topic:
             raise HTTPException(status_code=404, detail="Concept not found")
         status = topic.planStatus
-    return {"commits": agent.git_log(_work_dir(topic)), "status": status}
+    cwd = _work_dir(topic)
+    return {"commits": agent.git_log(cwd), "served": agent.served_hash(cwd), "status": status}
 
 
 @app.post("/api/concepts/{slug}/improve")

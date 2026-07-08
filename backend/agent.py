@@ -253,10 +253,47 @@ def git_commit(cwd: Path, message: str) -> bool:
     """
     _git_ensure_repo(cwd)
     _git(["add", "-A"], cwd)
+    # dist/ is gitignored (it's generated), but we deliberately version the built
+    # bundle too so any past version can be re-served by a plain git restore — no
+    # Claude Code, no npm rebuild needed to switch versions.
+    if (cwd / "dist").exists():
+        _git(["add", "-f", "dist"], cwd)
     if _git(["diff", "--cached", "--quiet"], cwd).returncode == 0:
         return False  # nothing staged
     _git(["commit", "-q", "-m", message], cwd)
     return True
+
+
+def has_committed_dist(cwd: Path, ref: str) -> bool:
+    """True if commit ``ref`` carries a built bundle, i.e. it can be served by a
+    plain git restore without rebuilding."""
+    if not (cwd / ".git").exists():
+        return False
+    return _git(["cat-file", "-e", f"{ref}:dist/index.html"], cwd).returncode == 0
+
+
+def served_hash(cwd: Path) -> str:
+    """Full hash of the commit whose version is currently being served.
+
+    Usually that's HEAD, but a revert records a synthetic ``Revert to <short>``
+    commit at the tip whose content is really an earlier version — and those
+    synthetic commits are hidden from the history — so resolve through it to the
+    real commit the user is actually looking at.
+    """
+    if not (cwd / ".git").exists():
+        return ""
+    head = _git(["rev-parse", "HEAD"], cwd).stdout.strip()
+    if not head:
+        return ""
+    subject = _git(["log", "-1", "--pretty=format:%s", "HEAD"], cwd).stdout.strip()
+    m = re.match(r"^Revert to ([0-9a-f]{4,40})$", subject)
+    if m:
+        resolved = _git(
+            ["rev-parse", "--verify", "--quiet", m.group(1) + "^{commit}"], cwd
+        ).stdout.strip()
+        if resolved:
+            return resolved
+    return head
 
 
 # Auto-generated maintenance commits (reverts, protective snapshots) that the

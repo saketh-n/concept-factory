@@ -165,8 +165,10 @@
   var tab = "improve";
   var busy = false;
   var busyMsg = "";
+  var busyClaude = false; // true only when Claude Code is the thing running
   var errMsg = "";
   var commits = [];
+  var served = "";        // hash of the version currently being served
   var draft = "";
   var logLines = [];
   var pollTimer = null;
@@ -188,9 +190,10 @@
     }).catch(function () {});
   }
 
-  function startPolling(message) {
+  function startPolling(message, isClaude) {
     busy = true;
     busyMsg = message;
+    busyClaude = !!isClaude;
     errMsg = "";
     logLines = [];
     render();
@@ -202,7 +205,10 @@
   function loadHistory() {
     api.history().then(function (r) {
       commits = r.commits || [];
-      if (r.status === "building") startPolling("Claude Code is working…");
+      served = r.served || "";
+      // A build already in progress on open could be an improve (Claude Code) or
+      // a revert (plain git/npm) — stay neutral rather than claim Claude Code.
+      if (r.status === "building") startPolling("Working…", false);
       render();
     }).catch(function () {
       errMsg = "Couldn't load version history (backend error).";
@@ -215,13 +221,13 @@
     if (!text) return;
     draft = "";
     api.improve(text).then(function () {
-      startPolling("Claude Code is improving this app…");
+      startPolling("Claude Code is improving this app…", true);
     });
   }
 
   function doRevert(hash) {
     api.revert(hash).then(function () {
-      startPolling("Rolling back to this version…");
+      startPolling("Switching to this version…", false);
     });
   }
 
@@ -249,14 +255,19 @@
       if (commits.length === 0) {
         bodyHtml = '<p class="empty">No version history yet.</p>';
       } else {
-        bodyHtml = commits.map(function (c, i) {
+        // The served version isn't necessarily the newest commit (a revert
+        // restores an older one), so mark the one the backend reports as live.
+        var liveHash = served;
+        var hasLive = commits.some(function (c) { return c.hash === liveHash; });
+        if (!hasLive) liveHash = commits[0].hash; // fallback: assume newest
+        bodyHtml = commits.map(function (c) {
           return (
             '<div class="commit">' +
               '<div class="info">' +
                 '<div class="msg">' + escapeHtml(c.message) + "</div>" +
                 '<div class="meta">' + c.hash.slice(0, 7) + " · " + relTime(c.date) + "</div>" +
               "</div>" +
-              (i === 0
+              (c.hash === liveHash
                 ? '<span class="pill">serving now</span>'
                 : '<button class="revert" data-hash="' + c.hash + '">Serve this</button>') +
             "</div>"
@@ -314,7 +325,10 @@
     var el = root.querySelector("#stream");
     if (!el) return;
     if (logLines.length === 0) {
-      el.innerHTML = '<span class="waiting">Waiting for Claude Code…</span>';
+      el.innerHTML =
+        '<span class="waiting">' +
+        (busyClaude ? "Waiting for Claude Code…" : "Running…") +
+        "</span>";
     } else {
       el.innerHTML =
         logLines.map(escapeHtml).join("\n") + '<span class="caret"></span>';
