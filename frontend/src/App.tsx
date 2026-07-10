@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Topic } from "./api";
 import TopicCard from "./components/TopicCard";
-import GroupTree from "./components/GroupTree";
+import WorldMap from "./components/WorldMap";
 import PlanModal from "./components/PlanModal";
 
 const BUSY: Topic["planStatus"][] = ["queued", "planning", "building"];
@@ -178,16 +178,17 @@ export default function App() {
     : boardTopics;
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen game-shell">
       {/* Top bar: wordmark · meta prompt · actions */}
-      <header className="sticky top-0 z-10 border-b border-white/[0.07] bg-ink/85 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl items-center gap-5 px-6 py-3">
-          <span className="shrink-0 select-none font-mono text-sm font-semibold text-slate-100">
-            concept<span className="text-violet-400">_</span>factory
+      <header className="sticky top-0 z-10 border-b border-white/10 bg-[#0e1a2e]/90 shadow-[0_4px_24px_rgba(0,0,0,0.3)] backdrop-blur-md">
+        <div className="mx-auto flex max-w-5xl items-center gap-5 px-6 py-3">
+          <span className="shrink-0 select-none font-display text-[0.95rem] font-semibold leading-none tracking-tight text-[#e8f5d8]">
+            <span className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-[#5DCF7A] shadow-[0_0_0_3px_rgba(93,207,122,0.25)]" aria-hidden />
+            Concept<span className="text-[#8FBF6A]">Factory</span>
           </span>
 
           <input
-            className="min-w-0 flex-1 rounded-lg border border-white/[0.07] bg-well px-3.5 py-2 text-[0.83rem] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:border-violet-400/40"
+            className="min-w-0 flex-1 rounded-full border border-white/10 bg-black/25 px-4 py-2 text-[0.83rem] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:border-[#8FBF6A]/50"
             placeholder="Meta prompt — guidance the agent applies to every topic…"
             title="Applied to every topic when planning and building"
             value={metaPrompt}
@@ -203,33 +204,33 @@ export default function App() {
                 ? "Tick the checkboxes on two or more plan-ready cards to merge them"
                 : `Merge the ${selected.size} selected plans into one`
             }
-            className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-4 py-1.5 text-[0.83rem] font-medium text-slate-300 transition hover:bg-white/[0.08] active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 enabled:border-violet-400/30 enabled:bg-violet-400/10 enabled:text-violet-200 enabled:hover:bg-violet-400/20"
+            className="shrink-0 rounded-full border border-white/15 bg-white/[0.06] px-3.5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/[0.1] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 enabled:border-[#B07AE0]/45 enabled:bg-[#B07AE0]/15 enabled:text-[#e0b0ff]"
           >
             {consolidating
-              ? "Consolidating…"
-              : `Consolidate${selected.size >= 2 ? ` (${selected.size})` : ""}`}
+              ? "Merging…"
+              : `Merge${selected.size >= 2 ? ` ×${selected.size}` : ""}`}
           </button>
 
           <button
             onClick={generatePlans}
-            className="shrink-0 rounded-full bg-violet-400/15 px-4 py-1.5 text-[0.83rem] font-medium text-violet-200 ring-1 ring-inset ring-violet-400/30 transition hover:bg-violet-400/25 active:scale-95"
+            className="shrink-0 rounded-full bg-[#5DCF7A] px-4 py-1.5 text-xs font-semibold text-[#0e1a14] shadow-[0_3px_0_#3a9a55] transition hover:brightness-105 active:translate-y-px active:shadow-none"
           >
             Generate plans
           </button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-6 pb-24 pt-8">
+      <main className="mx-auto max-w-5xl px-6 pb-24 pt-8">
         {/* Fleet summary: the pipeline at a glance */}
         {!loading && topics.length > 0 && (
-          <div className="mb-6 flex flex-wrap items-center gap-x-5 gap-y-2">
+          <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2">
             {counts.map((p) => (
               <span
                 key={p.status}
-                className="flex items-center gap-1.5 font-mono text-[11.5px] text-slate-400"
+                className="flex items-center gap-1.5 text-[11px] font-medium text-slate-300"
               >
                 <span
-                  className={`h-1.5 w-1.5 rounded-full ${p.dot} ${
+                  className={`h-2 w-2 rounded-sm ${p.dot} ${
                     (p.status === "planning" || p.status === "building") && anyBusy
                       ? "animate-pulse"
                       : ""
@@ -247,8 +248,8 @@ export default function App() {
                   ⌕
                 </span>
                 <input
-                  className="w-44 rounded-full border border-white/[0.09] bg-well py-1 pl-7 pr-7 font-mono text-[11.5px] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:w-56 focus:border-violet-400/40"
-                  placeholder="Search cards…"
+                  className="w-44 rounded border-2 border-white/10 bg-black/30 py-1 pl-7 pr-7 font-mono text-[11.5px] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:w-56 focus:border-[#f8d878]/40"
+                  placeholder="Search worlds…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   onKeyDown={(e) => {
@@ -267,15 +268,15 @@ export default function App() {
               </span>
               <button
                 onClick={() => setIntakeOpen((o) => !o)}
-                className="font-mono text-[11.5px] text-slate-500 transition-colors hover:text-violet-300"
+                className="text-[11px] font-medium text-[#8FBF6A] transition-colors hover:text-[#b0d890]"
               >
-                + add topics
+                + Add topics
               </button>
               <button
                 onClick={clearAll}
-                className="font-mono text-[11.5px] text-slate-600 transition-colors hover:text-rose-300"
+                className="text-[11px] font-medium text-slate-500 transition-colors hover:text-rose-300"
               >
-                clear all
+                Clear all
               </button>
             </span>
           </div>
@@ -284,13 +285,13 @@ export default function App() {
         {/* Intake: paste topics (terminal-flavored, collapsible once the
             board is populated) */}
         {(intakeOpen || topics.length === 0) && (
-          <div className="mb-8 overflow-hidden rounded-xl border border-white/[0.07] bg-well">
-            <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-2">
-              <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-slate-500">
+          <div className="mb-8 overflow-hidden rounded-xl border-2 border-white/10 bg-black/25">
+            <div className="flex items-center justify-between border-b border-white/[0.06] bg-[#1a1a2e]/80 px-4 py-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-[#8FBF6A]">
                 Paste topics · one per line
               </span>
               <span className="font-mono text-[11px] text-slate-600">
-                Group &gt; Subgroup &gt; Title | notes
+                World &gt; Course &gt; Level | notes
               </span>
             </div>
             <textarea
@@ -313,7 +314,7 @@ export default function App() {
               <button
                 onClick={addTopics}
                 disabled={pendingCount === 0}
-                className="rounded-full bg-violet-400/15 px-4 py-1.5 text-[0.83rem] font-medium text-violet-200 ring-1 ring-inset ring-violet-400/30 transition hover:bg-violet-400/25 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-full bg-[#5DCF7A] px-4 py-1.5 text-xs font-semibold text-[#0e1a14] shadow-[0_3px_0_#3a9a55] transition hover:brightness-105 active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Add {pendingCount > 0 ? pendingCount : ""} card
                 {pendingCount === 1 ? "" : "s"}
@@ -322,26 +323,26 @@ export default function App() {
           </div>
         )}
 
-        {/* The board */}
+        {/* The overworld / world map board */}
         {loading ? (
-          <p className="font-mono text-sm text-slate-500">loading…</p>
+          <p className="text-sm text-slate-500">Loading island…</p>
         ) : topics.length === 0 ? (
           <p className="text-sm text-slate-500">
-            No topics yet. Paste a list above — each line becomes a card.
+            No topics yet. Paste a list above — each line becomes a level on the map.
           </p>
         ) : filteredTopics.length === 0 ? (
           <p className="text-sm text-slate-500">
-            No cards match{" "}
+            No worlds match{" "}
             <span className="font-mono text-slate-400">“{search.trim()}”</span>.{" "}
             <button
               onClick={() => setSearch("")}
-              className="text-violet-300 underline-offset-2 hover:underline"
+              className="text-[#5c94fc] underline-offset-2 hover:underline"
             >
               Clear search
             </button>
           </p>
         ) : (
-          <GroupTree
+          <WorldMap
             topics={filteredTopics}
             renderCard={(topic) => (
               <TopicCard
