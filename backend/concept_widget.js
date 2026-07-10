@@ -3,7 +3,7 @@
  *
  * Injected by the backend into every served concept's index.html. Renders a
  * floating launcher (bottom-right) that opens a panel with two tabs:
- *   • Improve  — chat box that asks Claude Code to change this app
+ *   • Improve  — chat box that asks Grok to change this app
  *   • Versions — git history with one-click "serve this version"
  *
  * Everything lives in a shadow root so the concept's own CSS can't touch it.
@@ -165,7 +165,7 @@
   var tab = "improve";
   var busy = false;
   var busyMsg = "";
-  var busyClaude = false; // true only when Claude Code is the thing running
+  var busyGrok = false; // true only when Grok is the thing running
   var errMsg = "";
   var commits = [];
   var served = "";        // hash of the version currently being served
@@ -190,10 +190,10 @@
     }).catch(function () {});
   }
 
-  function startPolling(message, isClaude) {
+  function startPolling(message, isGrok) {
     busy = true;
     busyMsg = message;
-    busyClaude = !!isClaude;
+    busyGrok = !!isGrok;
     errMsg = "";
     logLines = [];
     render();
@@ -206,8 +206,8 @@
     api.history().then(function (r) {
       commits = r.commits || [];
       served = r.served || "";
-      // A build already in progress on open could be an improve (Claude Code) or
-      // a revert (plain git/npm) — stay neutral rather than claim Claude Code.
+      // A build already in progress on open could be an improve (Grok) or
+      // a revert (plain git/npm) — stay neutral rather than claim Grok.
       if (r.status === "building") startPolling("Working…", false);
       render();
     }).catch(function () {
@@ -221,7 +221,7 @@
     if (!text) return;
     draft = "";
     api.improve(text).then(function () {
-      startPolling("Claude Code is improving this app…", true);
+      startPolling("Grok is improving this app…", true);
     });
   }
 
@@ -247,9 +247,9 @@
     var bodyHtml;
     if (tab === "improve") {
       bodyHtml =
-        '<p class="intro">Describe a change and Claude Code will rebuild this concept in place. The page reloads when it\'s done.</p>' +
+        '<p class="intro">Describe a change and Grok will rebuild this concept in place. The page reloads when it\'s done.</p>' +
         '<textarea id="ta" placeholder="e.g. add a dark-mode toggle, make it mobile-friendly, add two harder levels…"></textarea>' +
-        '<button class="send" id="send">Send to Claude Code</button>' +
+        '<button class="send" id="send">Send to Grok</button>' +
         (errMsg ? '<p class="err" style="margin-top:12px">' + escapeHtml(errMsg) + "</p>" : "");
     } else {
       if (commits.length === 0) {
@@ -327,7 +327,7 @@
     if (logLines.length === 0) {
       el.innerHTML =
         '<span class="waiting">' +
-        (busyClaude ? "Waiting for Claude Code…" : "Running…") +
+        (busyGrok ? "Waiting for Grok…" : "Running…") +
         "</span>";
     } else {
       el.innerHTML =

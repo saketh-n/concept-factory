@@ -28,7 +28,7 @@ _lock = threading.Lock()
 # (any step can land on "error"). Transient states are reset on startup.
 _TRANSIENT = {"queued", "planning", "building"}
 
-# Live progress streamed from each Claude Code run, kept in memory only (not
+# Live progress streamed from each Grok run, kept in memory only (not
 # persisted — it's ephemeral job output). topic_id -> list[str] of log lines.
 _LOGS: dict = {}
 _LOGS_LOCK = threading.Lock()
@@ -335,7 +335,7 @@ def delete_topic(topic_id: str) -> dict:
     return {"ok": True}
 
 
-# --- Plan generation (Claude Code) ------------------------------------------
+# --- Plan generation (Grok) -------------------------------------------------
 class RefineRequest(BaseModel):
     prompt: str
 
@@ -417,7 +417,7 @@ def _plan_job(topic_id: str, feedback: Optional[str] = None) -> None:
         context = "\n".join(p for p in (blurb, notes) if p)
         prompt = agent.build_plan_prompt(title, context, meta)
 
-    result = agent.run_claude(prompt, cwd, on_line=emit, session_id=session_id)
+    result = agent.run_grok(prompt, cwd, on_line=emit, session_id=session_id)
     plan_path = cwd / agent.PLAN_FILE
     plan_text = plan_path.read_text() if plan_path.exists() else ""
 
@@ -458,7 +458,7 @@ def _consolidate_job(new_id: str, src_plans: list, src_ids: List[str], meta: str
     emit = lambda line: _log_append(new_id, line)
     cwd = agent.topic_dir(slug)
     emit(f"Consolidating {len(src_plans)} plans into one unified plan…")
-    result = agent.run_claude(
+    result = agent.run_grok(
         agent.consolidate_prompt(src_plans, meta), cwd, on_line=emit
     )
     plan_path = cwd / agent.PLAN_FILE
@@ -509,7 +509,7 @@ def _build_job(topic_id: str) -> None:
     emit("Copying the concept template…")
     agent.copy_template(cwd)
     emit("Building the app from the approved plan…")
-    result = agent.run_claude(
+    result = agent.run_grok(
         agent.build_prompt(),
         cwd,
         on_line=emit,
@@ -551,7 +551,7 @@ def _improve_job(topic_id: str, request: str) -> None:
     emit = lambda line: _log_append(topic_id, line)
     cwd = _work_dir(topic)
     emit(f"Requesting improvement: {request}")
-    result = agent.run_claude(
+    result = agent.run_grok(
         agent.improve_prompt(request),
         cwd,
         on_line=emit,
@@ -615,7 +615,7 @@ def _revert_job(topic_id: str, commit_hash: str) -> None:
         return
 
     # The target's servable bundle was restored straight from git — just serve it.
-    # No Claude Code, no npm rebuild; switching a version is a pure git restore.
+    # No Grok, no npm rebuild; switching a version is a pure git restore.
     if agent.has_committed_dist(cwd, commit_hash):
         _set(topic_id, planStatus="built", planError="")
         emit("✓ Now serving this version.")
@@ -802,7 +802,7 @@ def revert_topic(topic_id: str, payload: HashRequest) -> Topic:
 
 @app.get("/api/topics/{topic_id}/log")
 def get_log(topic_id: str) -> dict:
-    """Live progress lines streamed from the topic's Claude Code run."""
+    """Live progress lines streamed from the topic's Grok run."""
     with _lock:
         topic = _find(topic_id)
         status = topic.planStatus if topic else "none"
@@ -839,7 +839,7 @@ def concept_status(slug: str) -> dict:
 
 @app.get("/api/concepts/{slug}/log")
 def concept_log(slug: str) -> dict:
-    """Live Claude Code output for the in-page widget's rebuild view."""
+    """Live Grok output for the in-page widget's rebuild view."""
     topic = _find_by_slug(slug)
     if not topic:
         raise HTTPException(status_code=404, detail="Concept not found")

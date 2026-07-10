@@ -24,45 +24,46 @@ meta-agent/
 ## How to use
 
 Drop this folder's contents into the root of your harness repo. The
-skill is already at `.claude/skills/concept-repo-builder/`, which is
-where both Claude Code and the Agent SDK look for project skills. In
-your Agent SDK options, load it with `setting_sources=["project"]` and
-enable it via the `skills` option (the SDK loads no filesystem settings
-by default). Docs: https://docs.claude.com/en/docs/agent-sdk/skills
+skill lives at `.claude/skills/concept-repo-builder/`; Grok discovers
+project skills from both `.grok/skills/` and `.claude/skills/` (Claude
+compat), so the same folder works whether you're iterating interactively
+in Grok or running headless via the Concept Factory harness.
+
+The Concept Factory backend drives Grok headless (`grok -p …`) with the
+house style condensed into the plan/build prompts in `backend/agent.py`,
+so parallel topic runs never have to load the full meta-agent tree.
 
 The agent's job per topic: copy `template/`, fill in everything marked
 `TOPIC:`, self-verify, and stop. Publishing is the harness's job after
 your approval — see ARCHITECTURE.md.
 
-## Why a Skill and not a CLAUDE.md
+## Why a Skill and not always-on project rules
 
 Both were candidates; the Skill wins here for four reasons:
 
-1. **It travels with your custom harness.** CLAUDE.md is Claude Code
-   project memory. You're building your own agent on the Agent SDK, and
-   skills are first-class there (loaded from `.claude/skills/` via
-   `setting_sources`) — the same folder works unchanged whether you're
-   iterating interactively in Claude Code or running headless in your
-   harness. One artifact, both runtimes.
+1. **It travels with your custom harness.** Always-on project rules
+   (AGENTS.md / CLAUDE.md) inject into every turn. You're running many
+   headless Grok sessions in parallel, and skills are first-class there —
+   progressive disclosure means the fat generation spec only loads when
+   a repo-building task actually needs it.
 2. **Progressive disclosure fits a fat spec.** Only the skill's
    name/description sits in context until a repo-building task triggers
    it; then SKILL.md loads, and the reference files (style guide, game
-   design, checklist) load only when consulted. A CLAUDE.md of this size
-   would be injected into *every* turn of *every* session — including
-   the many turns of a generation run that don't need style details —
-   burning context and diluting attention.
-3. **Skills bundle resources; CLAUDE.md is one flat file.** The spec
+   design, checklist) load only when consulted. Dumping this whole
+   package into every turn of every session would burn context and
+   dilute attention.
+3. **Skills bundle resources; a flat rules file is one file.** The spec
    here is inherently multi-file: spec + three references + (pointer to)
    the template. That's exactly the shape skills were designed for.
 4. **Scoping.** Your harness repo will eventually want its own
    always-on instructions (how to run the dashboard, state-file
-   conventions). That's what a *thin* CLAUDE.md in the harness repo is
+   conventions). That's what a thin AGENTS.md / project rules file is
    for. Keeping the generation spec in a skill means harness
    instructions and repo-generation instructions never compete.
 
 So: skill for the generation spec (this bundle), and later a short
-CLAUDE.md at your harness root for harness-development conventions —
-two or three lines of which can point at this skill.
+project rules file at your harness root for harness-development
+conventions — two or three lines of which can point at this skill.
 
 ## The template
 

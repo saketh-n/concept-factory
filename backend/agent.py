@@ -1,11 +1,11 @@
-"""Claude Code driver for Concept Factory.
+"""Grok driver for Concept Factory.
 
 Each topic card gets its own subfolder under ``workspace/`` and its own
-headless Claude Code instance. We never point the agent at the meta-agent
+headless Grok instance. We never point the agent at the meta-agent
 template folder (that would blow up token usage across ~100 parallel runs);
 instead the house style is condensed into the prompt below.
 
-This module is a *pure driver*: it knows how to run ``claude`` and build
+This module is a *pure driver*: it knows how to run ``grok`` and build
 prompts. All persisted state lives in main.py.
 """
 from __future__ import annotations
@@ -25,8 +25,12 @@ TEMPLATE_DIR = Path(__file__).parents[1] / "meta-agent" / "template"
 WORKSPACE = Path(__file__).parent / "workspace"
 WORKSPACE.mkdir(exist_ok=True)
 
-# Claude Code is I/O-bound (mostly waiting on the API) but each run spawns a
-# Node process, so we cap concurrency to protect memory and API rate limits.
+# Path to the Grok CLI. Override with GROK_BIN if it isn't on PATH
+# (common install location: ~/.grok/bin/grok).
+GROK_BIN = os.environ.get("GROK_BIN") or shutil.which("grok") or "grok"
+
+# Grok is I/O-bound (mostly waiting on the API) but each run spawns a
+# process, so we cap concurrency to protect memory and API rate limits.
 # 12-core / 18 GB machine → 8 in flight; the rest queue in the executor.
 CONCURRENCY = int(os.environ.get("CF_PLAN_CONCURRENCY", "8"))
 EXECUTOR = ThreadPoolExecutor(max_workers=CONCURRENCY)
@@ -189,7 +193,7 @@ def improve_prompt(request: str) -> str:
 
 
 # --- Git history ------------------------------------------------------------
-# Every Claude Code change to an app is captured as a descriptive commit so a
+# Every Grok change to an app is captured as a descriptive commit so a
 # bad change can be rolled back. Commits are made by the backend (deterministic),
 # not the agent — the house rules forbid the agent from touching git.
 def _git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -255,7 +259,7 @@ def git_commit(cwd: Path, message: str) -> bool:
     _git(["add", "-A"], cwd)
     # dist/ is gitignored (it's generated), but we deliberately version the built
     # bundle too so any past version can be re-served by a plain git restore — no
-    # Claude Code, no npm rebuild needed to switch versions.
+    # Grok, no npm rebuild needed to switch versions.
     if (cwd / "dist").exists():
         _git(["add", "-f", "dist"], cwd)
     if _git(["diff", "--cached", "--quiet"], cwd).returncode == 0:
@@ -411,74 +415,115 @@ Write ONLY `{PLAN_FILE}`. Do not scaffold code or create other files."""
 
 
 # --- Streaming event → human-readable line ---------------------------------
-def _describe_tool(name: str, inp: dict) -> str:
-    if name in ("Write", "Edit", "MultiEdit"):
-        fp = inp.get("file_path", "")
-        return f"✎ editing {Path(fp).name}" if fp else f"✎ {name}"
-    if name == "Read":
-        fp = inp.get("file_path", "")
-        return f"📖 reading {Path(fp).name}" if fp else "📖 reading"
-    if name == "Bash":
-        cmd = (inp.get("command", "") or "").replace("\n", " ")
-        return f"$ {cmd[:100]}"
-    if name in ("Glob", "Grep"):
-        return f"🔍 {name.lower()} {inp.get('pattern', '')}"[:100]
-    if name == "TodoWrite":
-        return "🗂  updating task list"
-    return f"⚙ {name}"
+# Grok's --output-format streaming-json emits NDJSON with types:
+#   text / thought / end / error  (plus occasional max_turns_reached, etc.)
+# Tokens arrive one chunk at a time, so we coalesce them into display lines.
+class _StreamCoalescer:
+    """Buffer token-level text/thought events into skimmable log lines."""
+
+    def __init__(self, on_line: Callable[[str], None]) -> None:
+        self._emit = on_line
+        self._text = ""
+        self._thought = ""
+        self._thought_shown = False
+
+    def push(self, evt: dict) -> None:
+        etype = evt.get("type")
+        if etype == "text":
+            self._flush_thought(partial=True)
+            self._text += evt.get("data") or ""
+            self._flush_text(force=False)
+        elif etype == "thought":
+            self._flush_text(force=True)
+            self._thought += evt.get("data") or ""
+            # Thoughts are extremely granular — surface at most one marker so
+            # the log stays readable, then drop the rest of the block.
+            if not self._thought_shown and len(self._thought.strip()) >= 24:
+                self._emit("💭 thinking…")
+                self._thought_shown = True
+                self._thought = ""
+        elif etype == "error":
+            self._flush_all()
+            msg = (evt.get("message") or evt.get("data") or "error").strip()
+            if msg:
+                self._emit(f"⚠ {msg}")
+        elif etype == "end":
+            self._flush_all()
+            if evt.get("stopReason") in ("Error", "Cancelled", "MaxTurns"):
+                self._emit("⚠ run ended early")
+            else:
+                self._emit("✓ Grok finished this turn")
+        elif etype == "max_turns_reached":
+            self._flush_all()
+            self._emit("⚠ max turns reached")
+
+    def _flush_text(self, force: bool) -> None:
+        if not self._text:
+            return
+        # Emit complete lines as they form; force dumps any remainder.
+        while True:
+            nl = self._text.find("\n")
+            if nl < 0:
+                break
+            line = self._text[:nl].rstrip()
+            self._text = self._text[nl + 1 :]
+            if line.strip():
+                self._emit(line)
+        if force and self._text.strip():
+            self._emit(self._text.strip())
+            self._text = ""
+        elif not force and len(self._text) >= 160:
+            # Long paragraph without newlines — emit a soft break so the UI
+            # updates live rather than waiting for the whole turn.
+            cut = self._text.rfind(" ", 0, 160)
+            if cut < 40:
+                cut = 160
+            self._emit(self._text[:cut].strip())
+            self._text = self._text[cut:].lstrip()
+
+    def _flush_thought(self, partial: bool) -> None:
+        # Drop residual thought buffer when we switch back to text.
+        self._thought = ""
+        if not partial:
+            self._thought_shown = False
+
+    def _flush_all(self) -> None:
+        self._flush_text(force=True)
+        self._flush_thought(partial=False)
 
 
-def format_event(evt: dict) -> List[str]:
-    """Turn one stream-json event into zero or more display lines."""
-    etype = evt.get("type")
-    if etype == "system" and evt.get("subtype") == "init":
-        return ["Claude Code session started…"]
-    if etype == "assistant":
-        lines: List[str] = []
-        for block in evt.get("message", {}).get("content", []):
-            btype = block.get("type")
-            if btype == "text":
-                text = (block.get("text") or "").strip()
-                if text:
-                    lines.append(text)
-            elif btype == "thinking":
-                text = (block.get("thinking") or "").strip()
-                if text:
-                    lines.append("💭 " + text)
-            elif btype == "tool_use":
-                lines.append(_describe_tool(block.get("name", ""), block.get("input", {}) or {}))
-        return lines
-    if etype == "result":
-        if evt.get("is_error"):
-            return ["⚠ run ended with an error"]
-        return ["✓ Claude Code finished this turn"]
-    return []
-
-
-# --- Running claude ---------------------------------------------------------
-def run_claude(
+# --- Running grok -----------------------------------------------------------
+def _run_grok_once(
     prompt: str,
     cwd: Path,
-    on_line: Optional[Callable[[str], None]] = None,
-    session_id: Optional[str] = None,
-    permission_mode: str = "acceptEdits",
-    dangerously_skip: bool = False,
-    timeout: int = PLAN_TIMEOUT,
+    emit: Callable[[str], None],
+    session_id: Optional[str],
+    dangerously_skip: bool,
+    permission_mode: str,
+    timeout: int,
 ) -> dict:
-    """Run one headless Claude Code turn, streaming progress via ``on_line``.
-
-    Uses --output-format stream-json so we can surface Claude's narration and
-    tool calls live (the same detail the CLI shows). Returns {sessionId, error}.
-    Claude Code carries its own auth, so no API key wiring is needed here.
-    """
-    emit = on_line or (lambda _s: None)
-    cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
-    if dangerously_skip:
-        cmd.append("--dangerously-skip-permissions")
-    else:
-        cmd += ["--permission-mode", permission_mode]
+    """Single attempt at a headless Grok turn. See ``run_grok``."""
+    # -p / --single triggers headless mode. --always-approve is required so
+    # file writes and shell commands don't hang waiting for a TTY prompt.
+    cmd = [
+        GROK_BIN,
+        "-p",
+        prompt,
+        "--output-format",
+        "streaming-json",
+        "--always-approve",
+        "--cwd",
+        str(cwd),
+    ]
+    # Build / improve need unrestricted tool use; plan mode can stay lighter
+    # but headless still needs auto-approve (already set above).
+    if dangerously_skip or permission_mode in ("bypassPermissions", "auto"):
+        cmd += ["--permission-mode", "bypassPermissions"]
     if session_id:
         cmd += ["--resume", session_id]
+
+    emit("Grok session started…" if not session_id else f"Resuming Grok session {session_id[:8]}…")
+    coalescer = _StreamCoalescer(emit)
 
     proc = subprocess.Popen(
         cmd,
@@ -510,12 +555,16 @@ def run_claude(
                 evt = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if evt.get("session_id"):
-                result_session = evt["session_id"]
-            if evt.get("type") == "result" and evt.get("is_error"):
-                final_error = evt.get("subtype") or "error"
-            for msg in format_event(evt):
-                emit(msg)
+            # Session id lives on the terminal `end` event (camelCase).
+            if evt.get("sessionId"):
+                result_session = evt["sessionId"]
+            if evt.get("type") == "error":
+                final_error = evt.get("message") or evt.get("data") or "error"
+            if evt.get("type") == "end":
+                stop = evt.get("stopReason") or ""
+                if stop in ("Error", "Cancelled"):
+                    final_error = final_error or f"stopped: {stop}"
+            coalescer.push(evt)
         proc.wait()
     finally:
         timer.cancel()
@@ -523,9 +572,61 @@ def run_claude(
 
     if proc.returncode not in (0, None) and not final_error:
         detail = "".join(stderr_chunks).strip()[-500:]
-        final_error = detail or f"claude exited with code {proc.returncode}"
+        final_error = detail or f"grok exited with code {proc.returncode}"
 
     return {"sessionId": result_session, "error": final_error}
+
+
+def _looks_like_session_error(err: Optional[str]) -> bool:
+    if not err:
+        return False
+    low = err.lower()
+    return any(
+        needle in low
+        for needle in (
+            "session",
+            "resume",
+            "not found",
+            "unknown session",
+            "no such",
+            "invalid session",
+        )
+    )
+
+
+def run_grok(
+    prompt: str,
+    cwd: Path,
+    on_line: Optional[Callable[[str], None]] = None,
+    session_id: Optional[str] = None,
+    permission_mode: str = "acceptEdits",
+    dangerously_skip: bool = False,
+    timeout: int = PLAN_TIMEOUT,
+) -> dict:
+    """Run one headless Grok turn, streaming progress via ``on_line``.
+
+    Uses ``--output-format streaming-json`` so we can surface Grok's narration
+    live. Returns ``{sessionId, error}``. Auth is Grok's own (cached OAuth or
+    ``XAI_API_KEY``) — no key wiring is needed here.
+
+    ``permission_mode`` / ``dangerously_skip`` are kept for call-site
+    compatibility with the old Claude driver. Unattended factory runs always
+    auto-approve tools (``--always-approve``); builds additionally request
+    ``bypassPermissions``.
+
+    If a stored ``session_id`` fails to resume (e.g. leftover Claude session
+    ids from before the swap), we retry once with a fresh session.
+    """
+    emit = on_line or (lambda _s: None)
+    result = _run_grok_once(
+        prompt, cwd, emit, session_id, dangerously_skip, permission_mode, timeout
+    )
+    if result["error"] and session_id and _looks_like_session_error(result["error"]):
+        emit("Session resume failed — starting a fresh Grok session…")
+        result = _run_grok_once(
+            prompt, cwd, emit, None, dangerously_skip, permission_mode, timeout
+        )
+    return result
 
 
 # --- Serving the built concept ----------------------------------------------

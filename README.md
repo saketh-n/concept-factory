@@ -4,12 +4,21 @@ A tiny idea board. Type a topic, generate a card, and edit its title, blurb, and
 notes inline. A meta prompt at the top sets the guiding intent for the board.
 Everything is persisted to disk by a FastAPI backend and reloaded on startup.
 
+Plan generation, builds, and in-place improvements are driven by **Grok**
+headless (`grok -p … --output-format streaming-json`), one session per topic.
+
+## Prerequisites
+
+- [Grok CLI](https://grok.x.ai) installed and on your `PATH` (or set `GROK_BIN`)
+- Authenticated via `grok login`, or `XAI_API_KEY` in the environment
+
 ## Layout
 
 ```
 concept-factory/
-├── backend/      # FastAPI + JSON-file persistence
+├── backend/      # FastAPI + JSON-file persistence + Grok driver
 ├── frontend/     # React + Vite + Tailwind + TypeScript
+├── meta-agent/   # house-style template + generation skill
 └── launch.sh     # starts both together
 ```
 

@@ -48,7 +48,7 @@ function BuiltPanel({
   return (
     <div className="space-y-5">
       <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-200">
-        Claude Code finished building the concept. Open it, request improvements,
+        Grok finished building the concept. Open it, request improvements,
         or roll back to an earlier version below.
       </div>
 
@@ -121,7 +121,7 @@ interface Props {
 
 const BUSY: Topic["planStatus"][] = ["queued", "planning", "building"];
 
-/** Live-streamed progress from the running Claude Code instance. */
+/** Live-streamed progress from the running Grok instance. */
 function StreamLog({ topicId }: { topicId: string }) {
   const [lines, setLines] = useState<string[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -155,7 +155,7 @@ function StreamLog({ topicId }: { topicId: string }) {
       className="h-[52vh] overflow-y-auto rounded-lg border border-white/[0.06] bg-ink p-4 font-mono text-[0.8rem] leading-relaxed text-slate-300"
     >
       {lines.length === 0 ? (
-        <span className="text-slate-500">Waiting for Claude Code…</span>
+        <span className="text-slate-500">Waiting for Grok…</span>
       ) : (
         lines.map((l, i) => (
           <div key={i} className="whitespace-pre-wrap break-words">
@@ -299,7 +299,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
             <div className="flex gap-2">
               <input
                 className="flex-1 rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-violet-400/40"
-                placeholder="Ask Claude Code to refine the plan…"
+                placeholder="Ask Grok to refine the plan…"
                 value={refine}
                 onChange={(e) => setRefine(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && sendRefine()}

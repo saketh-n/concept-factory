@@ -2,9 +2,36 @@ import { useEffect, useState } from "react";
 import { api, type Topic } from "./api";
 import TopicCard from "./components/TopicCard";
 import WorldMap from "./components/WorldMap";
+import GroupTree from "./components/GroupTree";
 import PlanModal from "./components/PlanModal";
+import Workbench, { isPlanMode } from "./components/Workbench";
 
 const BUSY: Topic["planStatus"][] = ["queued", "planning", "building"];
+
+type BoardView = "cards" | "map";
+const VIEW_LS = "conceptFactory.boardView";
+const WORKBENCH_LS = "conceptFactory.workbenchOpen";
+
+function loadView(): BoardView {
+  try {
+    const v = localStorage.getItem(VIEW_LS);
+    if (v === "cards" || v === "map") return v;
+  } catch {
+    /* ignore */
+  }
+  return "map";
+}
+
+function loadWorkbenchOpen(): boolean {
+  try {
+    const v = localStorage.getItem(WORKBENCH_LS);
+    if (v === "0") return false;
+    if (v === "1") return true;
+  } catch {
+    /* ignore */
+  }
+  return true; // default open so plan-mode cards are never hidden
+}
 
 /** Pipeline order + colors for the fleet summary strip. */
 const PIPELINE: { status: Topic["planStatus"]; label: string; dot: string }[] = [
@@ -42,9 +69,31 @@ export default function App() {
   const [exitingIds, setExitingIds] = useState<Set<string>>(new Set());
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   const [mergeTargetId, setMergeTargetId] = useState<string | null>(null);
+  // Cards (GroupTree) ↔ Map (Three.js overworld). Persisted so the choice sticks.
+  const [view, setView] = useState<BoardView>(loadView);
+  // Map-mode tray of plan-mode cards — open by default so new topics aren't lost.
+  const [workbenchOpen, setWorkbenchOpen] = useState(loadWorkbenchOpen);
+  // Soft-highlight freshly added cards in the workbench for a few seconds.
+  const [freshIds, setFreshIds] = useState<Set<string>>(new Set());
 
   const anyBusy = topics.some((t) => BUSY.includes(t.planStatus));
   const openPlan = topics.find((t) => t.id === openPlanId) ?? null;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIEW_LS, view);
+    } catch {
+      /* ignore */
+    }
+  }, [view]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(WORKBENCH_LS, workbenchOpen ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [workbenchOpen]);
 
   useEffect(() => {
     api
@@ -79,8 +128,27 @@ export default function App() {
   const addTopics = async () => {
     if (!paste.trim()) return;
     const created = await api.createTopicsBulk(paste);
+    if (created.length === 0) return;
     setTopics((prev) => [...prev, ...created]);
     setPaste("");
+    // Surface new cards: open the workbench (map view) and flash-highlight them.
+    // Plan-mode cards never appear as finished cottages, so this is the landing pad.
+    setWorkbenchOpen(true);
+    const ids = new Set(created.map((t) => t.id));
+    setFreshIds(ids);
+    window.setTimeout(() => {
+      setFreshIds((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+    }, 4500);
+    // Scroll workbench / board into view after layout.
+    window.setTimeout(() => {
+      document
+        .getElementById("board-anchor")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
   };
 
   // Number of non-empty lines, previewed on the button.
@@ -117,10 +185,11 @@ export default function App() {
       //    the sources collapsing away.
       setTopics((prev) => [...prev, created]);
       setMergeTargetId(created.id);
+      setWorkbenchOpen(true); // merged plan lands in plan mode — keep it visible on map
       setExitingIds(new Set(ids));
       setSelected(new Set());
       // 2) After the collapse animation, remove the sources from the board and
-      //    open the plan modal so the Claude Code run streams live.
+      //    open the plan modal so the Grok run streams live.
       window.setTimeout(() => {
         setHiddenIds((prev) => new Set([...prev, ...ids]));
         setExitingIds(new Set());
@@ -176,6 +245,23 @@ export default function App() {
         return terms.every((term) => haystack.includes(term));
       })
     : boardTopics;
+
+  // Plan-mode cards (everything not yet built) for the map-mode workbench.
+  const workbenchTopics = filteredTopics.filter((t) => isPlanMode(t.planStatus));
+
+  const renderCard = (topic: Topic) => (
+    <TopicCard
+      key={topic.id}
+      topic={topic}
+      onChange={(patch) => updateTopic(topic.id, patch)}
+      onDelete={() => deleteTopic(topic.id)}
+      onOpenPlan={() => setOpenPlanId(topic.id)}
+      selected={selected.has(topic.id)}
+      onToggleSelect={() => toggleSelect(topic.id)}
+      merging={exitingIds.has(topic.id)}
+      entering={topic.id === mergeTargetId || freshIds.has(topic.id)}
+    />
+  );
 
   return (
     <div className="min-h-screen game-shell">
@@ -239,7 +325,36 @@ export default function App() {
                 {p.n} {p.label}
               </span>
             ))}
-            <span className="ml-auto flex items-center gap-4">
+            <span className="ml-auto flex items-center gap-3 sm:gap-4">
+              {/* Cards ↔ Map view toggle */}
+              <div
+                className="view-toggle"
+                role="group"
+                aria-label="Board view"
+              >
+                <button
+                  type="button"
+                  onClick={() => setView("cards")}
+                  aria-pressed={view === "cards"}
+                  className={view === "cards" ? "is-active" : ""}
+                  title="Card list with group tree"
+                >
+                  Cards
+                  {workbenchTopics.length > 0 && view !== "cards" ? (
+                    <span className="view-toggle-badge">{workbenchTopics.length}</span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView("map")}
+                  aria-pressed={view === "map"}
+                  className={view === "map" ? "is-active" : ""}
+                  title="3D overworld map"
+                >
+                  Map
+                </button>
+              </div>
+
               <span className="relative flex items-center">
                 <span
                   className="pointer-events-none absolute left-2.5 text-slate-600"
@@ -248,8 +363,8 @@ export default function App() {
                   ⌕
                 </span>
                 <input
-                  className="w-44 rounded border-2 border-white/10 bg-black/30 py-1 pl-7 pr-7 font-mono text-[11.5px] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:w-56 focus:border-[#f8d878]/40"
-                  placeholder="Search worlds…"
+                  className="w-40 rounded border-2 border-white/10 bg-black/30 py-1 pl-7 pr-7 font-mono text-[11.5px] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:w-52 focus:border-[#f8d878]/40 sm:w-44"
+                  placeholder={view === "map" ? "Search worlds…" : "Search cards…"}
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   onKeyDown={(e) => {
@@ -323,42 +438,44 @@ export default function App() {
           </div>
         )}
 
-        {/* The overworld / world map board */}
-        {loading ? (
-          <p className="text-sm text-slate-500">Loading island…</p>
-        ) : topics.length === 0 ? (
-          <p className="text-sm text-slate-500">
-            No topics yet. Paste a list above — each line becomes a level on the map.
-          </p>
-        ) : filteredTopics.length === 0 ? (
-          <p className="text-sm text-slate-500">
-            No worlds match{" "}
-            <span className="font-mono text-slate-400">“{search.trim()}”</span>.{" "}
-            <button
-              onClick={() => setSearch("")}
-              className="text-[#5c94fc] underline-offset-2 hover:underline"
-            >
-              Clear search
-            </button>
-          </p>
-        ) : (
-          <WorldMap
-            topics={filteredTopics}
-            renderCard={(topic) => (
-              <TopicCard
-                key={topic.id}
-                topic={topic}
-                onChange={(patch) => updateTopic(topic.id, patch)}
-                onDelete={() => deleteTopic(topic.id)}
-                onOpenPlan={() => setOpenPlanId(topic.id)}
-                selected={selected.has(topic.id)}
-                onToggleSelect={() => toggleSelect(topic.id)}
-                merging={exitingIds.has(topic.id)}
-                entering={topic.id === mergeTargetId}
+        {/* Board: card tree or 3D overworld (+ workbench for plan-mode cards) */}
+        <div id="board-anchor">
+          {loading ? (
+            <p className="text-sm text-slate-500">Loading…</p>
+          ) : topics.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              No topics yet. Paste a list above — each line becomes a card
+              {view === "map" ? " and a level on the map" : ""}.
+            </p>
+          ) : filteredTopics.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              No {view === "map" ? "worlds" : "cards"} match{" "}
+              <span className="font-mono text-slate-400">
+                “{search.trim()}”
+              </span>
+              .{" "}
+              <button
+                onClick={() => setSearch("")}
+                className="text-[#5c94fc] underline-offset-2 hover:underline"
+              >
+                Clear search
+              </button>
+            </p>
+          ) : view === "cards" ? (
+            <GroupTree topics={filteredTopics} renderCard={renderCard} />
+          ) : (
+            <>
+              <WorldMap topics={filteredTopics} renderCard={renderCard} />
+              <Workbench
+                topics={workbenchTopics}
+                open={workbenchOpen}
+                onToggle={() => setWorkbenchOpen((o) => !o)}
+                highlightIds={freshIds}
+                renderCard={renderCard}
               />
-            )}
-          />
-        )}
+            </>
+          )}
+        </div>
       </main>
 
       {openPlan && (

@@ -142,7 +142,7 @@ export default function TopicCard({
       } ${merging ? "merge-out" : ""} ${entering ? "merge-in" : ""}`}
     >
       {/* Signature: the status rail. Color = lifecycle state; pulses while a
-          Claude Code instance is live on this topic. */}
+          Grok instance is live on this topic. */}
       <span
         className={`absolute inset-y-0 left-0 w-[3px] ${status.rail} ${
           status.pulse ? "animate-pulse" : ""
