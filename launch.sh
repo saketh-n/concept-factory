@@ -4,6 +4,36 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Pull XAI_* from a login zsh if this shell doesn't already have them
+# (common when the app was started before keys were added to ~/.zshrc,
+# or from a GUI/IDE that never sources ~/.zshrc).
+if [ -z "${XAI_MANAGEMENT_API_KEY:-}" ] || [ -z "${XAI_API_KEY:-}" ]; then
+  if command -v zsh >/dev/null 2>&1 && [ -f "${HOME}/.zshrc" ]; then
+    eval "$(
+      zsh -lic 'env' 2>/dev/null | awk -F= '
+        $1 ~ /^XAI_/ {
+          # Escape single quotes for safe eval
+          val=$0; sub(/^[^=]*=/, "", val)
+          gsub(/\047/, "\047\\\047\047", val)
+          printf "export %s=\047%s\047\n", $1, val
+        }'
+    )" || true
+  fi
+fi
+
+# Load repo .env if present (overrides shell for local overrides)
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+if [ -z "${XAI_MANAGEMENT_API_KEY:-}" ]; then
+  echo "⚠  XAI_MANAGEMENT_API_KEY is not set — credits HUD cannot read console.x.ai."
+  echo "   Add it to ~/.zshrc (or .env) and restart: export XAI_MANAGEMENT_API_KEY=..."
+fi
+
 # --- Backend ---------------------------------------------------------------
 echo "==> Setting up backend"
 cd "$ROOT/backend"

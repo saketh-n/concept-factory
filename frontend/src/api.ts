@@ -42,6 +42,27 @@ export interface State {
   topics: Topic[];
 }
 
+/** Prepaid $ remaining from console.x.ai (Management API). */
+export interface Credits {
+  ok: boolean;
+  currency: string;
+  label: string;
+  detail: string;
+  source?: string;
+  spentUsd: number;
+  sessionSpendUsd: number;
+  /** Prepaid issued total (compat field name). */
+  budgetUsd: number | null;
+  remainingUsd: number | null;
+  prepaidIssuedUsd?: number | null;
+  prepaidUsedUsd?: number | null;
+  /** % of prepaid pack remaining (for the bar). */
+  pct: number | null;
+  error?: string | null;
+  remainingTokens?: number | null;
+  limitTokens?: number | null;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(`Request failed: ${res.status}`);
   return res.json() as Promise<T>;
@@ -148,6 +169,9 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ hash }),
     }).then(json<Topic>),
+
+  getCredits: (force = false) =>
+    fetch(`/api/credits${force ? "?force=1" : ""}`).then(json<Credits>),
 };
 
 /** URL where a built concept is served (via the backend / dev proxy). */

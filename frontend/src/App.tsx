@@ -5,6 +5,7 @@ import WorldMap from "./components/WorldMap";
 import GroupTree from "./components/GroupTree";
 import PlanModal from "./components/PlanModal";
 import Workbench, { isPlanMode } from "./components/Workbench";
+import CreditsHud from "./components/CreditsHud";
 
 const BUSY: Topic["planStatus"][] = ["queued", "planning", "building"];
 
@@ -265,10 +266,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen game-shell">
-      {/* Top bar: wordmark · meta prompt · actions */}
+      {/* Top bar: credits · wordmark · meta prompt · actions */}
       <header className="sticky top-0 z-10 border-b border-white/10 bg-[#0e1a2e]/90 shadow-[0_4px_24px_rgba(0,0,0,0.3)] backdrop-blur-md">
-        <div className="mx-auto flex max-w-5xl items-center gap-5 px-6 py-3">
-          <span className="shrink-0 select-none font-display text-[0.95rem] font-semibold leading-none tracking-tight text-[#e8f5d8]">
+        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2.5 sm:gap-4 sm:px-6">
+          <CreditsHud variant="header" />
+
+          <span className="hidden shrink-0 select-none font-display text-[0.95rem] font-semibold leading-none tracking-tight text-[#e8f5d8] md:inline">
             <span className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-[#5DCF7A] shadow-[0_0_0_3px_rgba(93,207,122,0.25)]" aria-hidden />
             Concept<span className="text-[#8FBF6A]">Factory</span>
           </span>

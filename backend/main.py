@@ -15,7 +15,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 import agent
@@ -33,6 +33,12 @@ _TRANSIENT = {"queued", "planning", "building"}
 _LOGS: dict = {}
 _LOGS_LOCK = threading.Lock()
 _LOG_CAP = 500
+
+# Per-concept tutor chat history (slug -> [{role, content}, ...]). Ephemeral —
+# cleared on server restart. System prompt is rebuilt each turn, not stored.
+_CHAT: dict = {}
+_CHAT_LOCK = threading.Lock()
+_CHAT_CAP = 40  # max user+assistant turns kept (system is separate)
 
 
 def _log_reset(topic_id: str) -> None:
@@ -893,8 +899,128 @@ def concept_revert(slug: str, payload: HashRequest) -> dict:
     return {"status": "building"}
 
 
+# --- Live tutor chat (read-only Q&A about this concept) ----------------------
+class ChatRequest(BaseModel):
+    message: str
+
+
+@app.get("/api/concepts/{slug}/chat")
+def concept_chat_history(slug: str) -> dict:
+    topic = _find_by_slug(slug)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Concept not found")
+    with _CHAT_LOCK:
+        messages = list(_CHAT.get(slug, []))
+    return {"messages": messages, "title": topic.title}
+
+
+@app.delete("/api/concepts/{slug}/chat")
+def concept_chat_clear(slug: str) -> dict:
+    topic = _find_by_slug(slug)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Concept not found")
+    with _CHAT_LOCK:
+        _CHAT.pop(slug, None)
+    return {"ok": True}
+
+
+@app.post("/api/concepts/{slug}/chat")
+def concept_chat(slug: str, payload: ChatRequest):
+    """Stream a tutor reply (SSE). Does not mutate the app — Q&A only."""
+    topic = _find_by_slug(slug)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Concept not found")
+    text = (payload.message or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    with _CHAT_LOCK:
+        history = list(_CHAT.get(slug, []))
+        history.append({"role": "user", "content": text})
+        # Cap history so context stays lean across long chats.
+        if len(history) > _CHAT_CAP:
+            history = history[-_CHAT_CAP:]
+        _CHAT[slug] = history
+
+    context = agent.topic_context(slug, topic.title, topic.blurb)
+    system = agent.chat_system_prompt(context)
+    api_messages = [{"role": "system", "content": system}, *history]
+
+    def event_stream():
+        # Thread-safe queue of text deltas from the xAI stream worker.
+        import queue as _queue
+
+        q: _queue.Queue = _queue.Queue()
+        done = threading.Event()
+        result_box: dict = {}
+
+        def on_delta(chunk: str) -> None:
+            q.put(chunk)
+
+        def worker() -> None:
+            try:
+                result_box["r"] = agent.stream_chat(api_messages, on_delta=on_delta)
+            except Exception as e:  # noqa: BLE001
+                result_box["r"] = {"text": "", "error": str(e), "usage": None}
+            finally:
+                done.set()
+
+        threading.Thread(target=worker, daemon=True).start()
+        yield f"data: {json.dumps({'type': 'start'})}\n\n"
+        # Drain as tokens arrive.
+        while not done.is_set() or not q.empty():
+            try:
+                chunk = q.get(timeout=0.05)
+                yield f"data: {json.dumps({'type': 'text', 'data': chunk})}\n\n"
+            except _queue.Empty:
+                continue
+        r = result_box.get("r") or {"text": "", "error": "no result", "usage": None}
+        reply = (r.get("text") or "").strip()
+        if r.get("error") and not reply:
+            yield f"data: {json.dumps({'type': 'error', 'message': r['error']})}\n\n"
+        else:
+            if reply:
+                with _CHAT_LOCK:
+                    hist = list(_CHAT.get(slug, []))
+                    hist.append({"role": "assistant", "content": reply})
+                    if len(hist) > _CHAT_CAP:
+                        hist = hist[-_CHAT_CAP:]
+                    _CHAT[slug] = hist
+            if r.get("error"):
+                yield f"data: {json.dumps({'type': 'error', 'message': r['error']})}\n\n"
+            yield f"data: {json.dumps({'type': 'end', 'text': reply})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# --- Credits (console.x.ai prepaid balance) ---------------------------------
+class BudgetUpdate(BaseModel):
+    budgetUsd: Optional[float] = None  # ignored; kept for API compat
+
+
+@app.get("/api/credits")
+def get_credits(force: bool = False) -> dict:
+    """Live prepaid $ remaining from console.x.ai (Management API)."""
+    return agent.get_balance(force=force)
+
+
+@app.put("/api/credits/budget")
+def set_credit_budget(payload: BudgetUpdate) -> dict:
+    """No-op: remaining balance is owned by console.x.ai, not a local budget."""
+    return agent.set_budget_usd(payload.budgetUsd)
+
+
 # --- Serving built concepts -------------------------------------------------
-_WIDGET_JS = (Path(__file__).parent / "concept_widget.js").read_text()
+def _widget_js() -> str:
+    # Read fresh each request so widget edits show up under --reload.
+    return (Path(__file__).parent / "concept_widget.js").read_text()
 
 
 # Served under /concepts/ so the frontend dev-server proxy (which forwards
@@ -903,7 +1029,7 @@ _WIDGET_JS = (Path(__file__).parent / "concept_widget.js").read_text()
 @app.get("/concepts/__widget.js")
 def concept_widget_js() -> Response:
     return Response(
-        content=_WIDGET_JS,
+        content=_widget_js(),
         media_type="application/javascript",
         headers={"Cache-Control": "no-cache"},
     )

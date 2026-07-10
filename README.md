@@ -10,7 +10,13 @@ headless (`grok -p … --output-format streaming-json`), one session per topic.
 ## Prerequisites
 
 - [Grok CLI](https://grok.x.ai) installed and on your `PATH` (or set `GROK_BIN`)
-- Authenticated via `grok login`, or `XAI_API_KEY` in the environment
+- Authenticated via `grok login`, **and** `XAI_API_KEY` in the environment
+  (plan/build agents + in-concept tutor chat)
+- **`XAI_MANAGEMENT_API_KEY`** for the credits HUD — this is a *Management Key*
+  from [console.x.ai](https://console.x.ai) → Settings → Management Keys
+  (not the same as the inference API key). The HUD reads the same prepaid
+  balance as the console (`management-api.x.ai/.../prepaid/balance`).
+- Optional: `XAI_TEAM_ID` if auto-detect from `XAI_API_KEY` fails
 
 ## Layout
 
