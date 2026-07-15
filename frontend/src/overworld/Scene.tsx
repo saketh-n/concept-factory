@@ -21,20 +21,26 @@ import {
   padColor,
   labelOf,
 } from "./layout";
+import RogueCharacter from "./PlayerCharacter";
 import {
-  AC,
   ACCottage,
   ACHouse,
   ACMystery,
+  Boulders,
   Butterflies,
   Clouds,
   DirtPath,
+  type Exclusion,
   ForestBelt,
+  GrassBlades,
   GrassField,
   Island,
   LampPost,
   Ocean,
+  RedGrass,
   SkyDome,
+  SunGlow,
+  Vista,
 } from "./props";
 
 type Keys = Record<string, boolean>;
@@ -362,7 +368,6 @@ function LivePlayer({
   const group = useRef<THREE.Group>(null);
   const body = useRef<THREE.Group>(null);
   const facing = useRef(0);
-  const bob = useRef(0);
   const walking = useRef(false);
   const nearRef = useRef<number | null>(null);
 
@@ -413,21 +418,13 @@ function LivePlayer({
       z: group.current.position.z,
     };
 
-    bob.current += dt * (walking.current ? 14 : 3);
-    const by = walking.current
-      ? Math.abs(Math.sin(bob.current)) * 0.07
-      : Math.sin(bob.current) * 0.02 + 0.02;
+    // Face the direction of travel; the animation clips handle all body motion.
     if (body.current) {
-      body.current.position.y = by;
       const cur = body.current.rotation.y;
       let diff = facing.current - cur;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      body.current.rotation.y = cur + diff * Math.min(1, dt * 14);
-      // subtle lean into the walk
-      body.current.rotation.x = walking.current
-        ? Math.sin(bob.current) * 0.045
-        : 0;
+      body.current.rotation.y = cur + diff * Math.min(1, dt * 12);
     }
 
     let best: number | null = null;
@@ -456,75 +453,15 @@ function LivePlayer({
     nearRef.current = null;
   }, [placed, playerRef]);
 
-  // Slightly larger than world scale so it reads at diorama camera distance
-  const S = 1.6;
   return (
-    <group
-      ref={group}
-      position={[playerRef.current.x, 0, playerRef.current.z]}
-      scale={S}
-    >
+    <group ref={group} position={[playerRef.current.x, 0, playerRef.current.z]}>
+      {/* soft contact shadow to ground the character */}
       <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[0.3, 16]} />
-        <meshStandardMaterial color="#000" transparent opacity={0.22} roughness={1} />
+        <circleGeometry args={[0.34, 16]} />
+        <meshStandardMaterial color="#000" transparent opacity={0.18} roughness={1} />
       </mesh>
       <group ref={body}>
-        {/* feet */}
-        <mesh position={[-0.1, 0.1, 0.08]} castShadow>
-          <sphereGeometry args={[0.1, 10, 8]} />
-          <meshStandardMaterial color={AC.playerFeet} roughness={0.85} />
-        </mesh>
-        <mesh position={[0.1, 0.1, 0.08]} castShadow>
-          <sphereGeometry args={[0.1, 10, 8]} />
-          <meshStandardMaterial color={AC.playerFeet} roughness={0.85} />
-        </mesh>
-        {/* body */}
-        <mesh position={[0, 0.38, 0]} castShadow>
-          <capsuleGeometry args={[0.22, 0.28, 6, 14]} />
-          <meshStandardMaterial color={AC.playerBody} roughness={0.82} />
-        </mesh>
-        {/* scarf */}
-        <mesh position={[0, 0.56, 0]} rotation={[0, 0, 0]}>
-          <torusGeometry args={[0.16, 0.05, 8, 14]} />
-          <meshStandardMaterial color="#e0b048" roughness={0.85} />
-        </mesh>
-        {/* head */}
-        <mesh position={[0, 0.74, 0]} castShadow>
-          <sphereGeometry args={[0.24, 16, 14]} />
-          <meshStandardMaterial color={AC.playerBody} roughness={0.82} />
-        </mesh>
-        {/* face plate */}
-        <mesh position={[0, 0.72, 0.16]}>
-          <sphereGeometry args={[0.14, 12, 10]} />
-          <meshStandardMaterial color={AC.playerFace} roughness={0.85} />
-        </mesh>
-        {/* eyes */}
-        <mesh position={[-0.06, 0.74, 0.26]}>
-          <sphereGeometry args={[0.032, 8, 8]} />
-          <meshStandardMaterial color="#1A1A1A" />
-        </mesh>
-        <mesh position={[0.06, 0.74, 0.26]}>
-          <sphereGeometry args={[0.032, 8, 8]} />
-          <meshStandardMaterial color="#1A1A1A" />
-        </mesh>
-        {/* hood bumps */}
-        <mesh position={[-0.18, 0.88, 0]} castShadow>
-          <sphereGeometry args={[0.09, 10, 8]} />
-          <meshStandardMaterial color={AC.playerDark} roughness={0.85} />
-        </mesh>
-        <mesh position={[0.18, 0.88, 0]} castShadow>
-          <sphereGeometry args={[0.09, 10, 8]} />
-          <meshStandardMaterial color={AC.playerDark} roughness={0.85} />
-        </mesh>
-        {/* backpack */}
-        <mesh position={[0, 0.42, -0.19]} castShadow>
-          <boxGeometry args={[0.26, 0.28, 0.12]} />
-          <meshStandardMaterial color="#5A3A20" roughness={0.9} />
-        </mesh>
-        <mesh position={[0, 0.55, -0.22]}>
-          <boxGeometry args={[0.18, 0.06, 0.08]} />
-          <meshStandardMaterial color="#7a5230" roughness={0.9} />
-        </mesh>
+        <RogueCharacter movingRef={walking} speed={MOVE_SPEED} />
       </group>
     </group>
   );
@@ -571,17 +508,31 @@ export default function OverworldScene({
       });
   }, [paths]);
 
+  // Ground-cover punch-outs so grass/boulders/red-grass never spawn on top
+  // of stops, dirt paths, or lamp posts.
+  const exclusions = useMemo<Exclusion[]>(() => {
+    const out: Exclusion[] = [];
+    for (const p of placed) out.push({ x: p.x, z: p.z, r: 2.0 });
+    for (const pts of paths) {
+      for (let i = 0; i < pts.length; i += 3) {
+        out.push({ x: pts[i].x, z: pts[i].z, r: 0.95 });
+      }
+    }
+    for (const l of lamps) out.push({ x: l.x, z: l.z, r: 1.2 });
+    return out;
+  }, [placed, paths, lamps]);
+
   return (
     <>
-      <fog attach="fog" args={[AC.fog, 26, 70]} />
+      <fog attach="fog" args={["#d5e6ee", 30, 85]} />
 
-      <ambientLight intensity={0.62} color="#fff4e4" />
-      <hemisphereLight args={["#bfe0f5", "#7aa85e", 0.55]} />
+      <ambientLight intensity={0.55} color="#fff3de" />
+      <hemisphereLight args={["#cfe8ff", "#86b45e", 0.6]} />
       <directionalLight
         castShadow
         position={[10, 18, 8]}
-        intensity={1.45}
-        color="#ffedcc"
+        intensity={1.6}
+        color="#ffe8c0"
         shadow-mapSize={[2048, 2048]}
         shadow-camera-far={60}
         shadow-camera-left={-22}
@@ -597,11 +548,16 @@ export default function OverworldScene({
       <CameraRig target={playerRef} dragGuard={dragGuard} />
 
       <SkyDome />
+      <SunGlow />
       <Clouds />
+      <Vista />
       <Ocean />
       <Island />
       <GrassField />
+      <Boulders exclusions={exclusions} seed={seed} />
       <ForestBelt seed={seed} />
+      <GrassBlades exclusions={exclusions} seed={seed} />
+      <RedGrass exclusions={exclusions} seed={seed} />
       <Butterflies seed={seed} />
 
       {paths.map((pts, i) => (
@@ -633,13 +589,13 @@ export default function OverworldScene({
       <EffectComposer multisampling={0}>
         <SMAA />
         <Bloom
-          intensity={0.35}
-          luminanceThreshold={0.85}
+          intensity={0.5}
+          luminanceThreshold={0.8}
           luminanceSmoothing={0.25}
           mipmapBlur
         />
         <BrightnessContrast brightness={0.015} contrast={0.055} />
-        <HueSaturation saturation={0.12} />
+        <HueSaturation saturation={0.18} />
         <Vignette eskil={false} offset={0.14} darkness={0.3} />
       </EffectComposer>
     </>

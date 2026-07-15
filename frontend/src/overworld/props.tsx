@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { hash01, WORLD_W, WORLD_D } from "./layout";
@@ -16,10 +16,10 @@ export const AC = {
   foam: "#eaf6ff",
   dirtPath: "#c9a26e",
   dirtEdge: "#a67f4e",
-  canopyDeep: "#2e7f3c",
-  canopyMid: "#43a04a",
-  canopyLite: "#63c05e",
-  canopyTip: "#85d878",
+  canopyDeep: "#3f9a44",
+  canopyMid: "#58bb50",
+  canopyLite: "#7cd45e",
+  canopyTip: "#9ce873",
   trunk: "#6b4423",
   log: "#c8a076",
   logDark: "#a5805a",
@@ -112,6 +112,51 @@ export function SkyDome() {
     <mesh material={material} renderOrder={-10}>
       <sphereGeometry args={[95, 24, 16]} />
     </mesh>
+  );
+}
+
+/* ── Sun glow — additive sprite hung high in the sky ────────────────── */
+function sunGlowTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const g = ctx.createRadialGradient(
+    size / 2,
+    size / 2,
+    0,
+    size / 2,
+    size / 2,
+    size / 2
+  );
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.35, "rgba(255,250,235,0.55)");
+  g.addColorStop(1, "rgba(255,245,220,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+let SUN_GLOW_TEX: THREE.Texture | null = null;
+
+export function SunGlow() {
+  const tex = useMemo(() => {
+    if (!SUN_GLOW_TEX) SUN_GLOW_TEX = sunGlowTexture();
+    return SUN_GLOW_TEX;
+  }, []);
+  return (
+    <sprite position={[30, 34, -46]} scale={[26, 26, 1]}>
+      <spriteMaterial
+        map={tex}
+        transparent
+        opacity={0.85}
+        depthWrite={false}
+        fog={false}
+        blending={THREE.AdditiveBlending}
+      />
+    </sprite>
   );
 }
 
@@ -264,6 +309,76 @@ export function Ocean() {
   );
 }
 
+/* ── Vista — hazy hills + mountains beyond the ocean horizon ───────── */
+const VISTA_HILL_COUNT = 4;
+
+export function Vista() {
+  const hills = useMemo(() => {
+    return Array.from({ length: VISTA_HILL_COUNT }, (_, i) => {
+      const angle = (hash01("vha" + i) - 0.5) * Math.PI * 1.7;
+      // Keep dist - radius comfortably beyond the island's ~23-unit half-diagonal
+      // or the dome surface pokes up through the plateau and buries the grass.
+      const radius = 8 + hash01("vhr" + i) * 5;
+      const dist = radius + 30 + hash01("vhd" + i) * 10;
+      const x = Math.sin(angle) * dist;
+      const z = -Math.cos(angle) * dist;
+      return { x, z, radius, id: i };
+    });
+  }, []);
+
+  const mountainCount = 9 + Math.floor(hash01("vmc") * 3); // 9..11
+  const mountains = useMemo(() => {
+    return Array.from({ length: mountainCount }, (_, i) => {
+      const angle = (hash01("vma" + i) - 0.5) * Math.PI * 1.8;
+      const dist = 52 + hash01("vmd" + i) * 23;
+      const x = Math.sin(angle) * dist;
+      let z = -Math.cos(angle) * dist;
+      if (z > 30) z = 30 - hash01("vm" + i + "zc") * 18;
+      const radius = 7 + hash01("vmr" + i) * 8;
+      const height = 7 + hash01("vmh" + i) * 7;
+      return { x, z, radius, height, id: i };
+    });
+  }, [mountainCount]);
+
+  const tallestIds = useMemo(() => {
+    return new Set(
+      [...mountains]
+        .sort((a, b) => b.height - a.height)
+        .slice(0, 4)
+        .map((m) => m.id)
+    );
+  }, [mountains]);
+
+  return (
+    <group>
+      {hills.map((h) => (
+        <mesh
+          key={h.id}
+          position={[h.x, SEA_Y + h.radius * 0.28 * 0.35, h.z]}
+          scale={[1, 0.28, 1]}
+        >
+          <sphereGeometry args={[h.radius, 16, 12]} />
+          <meshStandardMaterial color="#6fb254" roughness={0.95} />
+        </mesh>
+      ))}
+      {mountains.map((m) => (
+        <group key={m.id} position={[m.x, 0, m.z]}>
+          <mesh position={[0, m.height * 0.42, 0]}>
+            <coneGeometry args={[m.radius, m.height, 7]} />
+            <meshStandardMaterial color="#8aa8bd" roughness={1} flatShading />
+          </mesh>
+          {tallestIds.has(m.id) && (
+            <mesh position={[0, m.height * 0.42 + m.height * 0.42, 0]}>
+              <coneGeometry args={[m.radius * 0.32, m.height * 0.32, 7]} />
+              <meshStandardMaterial color="#ffffff" roughness={0.9} flatShading />
+            </mesh>
+          )}
+        </group>
+      ))}
+    </group>
+  );
+}
+
 /* ── Island: cliff walls + sand beach + grass top ──────────────────── */
 function grassTexture(): THREE.Texture {
   const size = 256;
@@ -271,7 +386,8 @@ function grassTexture(): THREE.Texture {
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = AC.grass;
+  // Brightened base — BOTW vibrant yellow-green rather than the older muted tone.
+  ctx.fillStyle = "#85c161";
   ctx.fillRect(0, 0, size, size);
   // multi-scale mottling
   for (let i = 0; i < 900; i++) {
@@ -392,10 +508,232 @@ export function GrassField() {
             color={p.c}
             roughness={1}
             transparent
-            opacity={0.22}
+            opacity={0.12}
             depthWrite={false}
           />
         </mesh>
+      ))}
+    </group>
+  );
+}
+
+/* ── Shared exclusion-circle helper (stops / paths / lamps punch-outs) ─ */
+export type Exclusion = { x: number; z: number; r: number };
+
+function isExcluded(x: number, z: number, exclusions: Exclusion[]): boolean {
+  for (let i = 0; i < exclusions.length; i++) {
+    const e = exclusions[i];
+    const dx = x - e.x;
+    const dz = z - e.z;
+    if (dx * dx + dz * dz < e.r * e.r) return true;
+  }
+  return false;
+}
+
+/* ── Instanced wind-swept grass blades — BOTW field centerpiece ────── */
+const GRASS_COUNT = 26000;
+const GRASS_BLADE_WIDTH = 0.045;
+const GRASS_BLADE_HEIGHT = 0.34;
+
+/** Tapered blade: base pinned at y=0, narrows to a point at the tip. */
+function bladeGeometry(width: number, height: number): THREE.BufferGeometry {
+  const geo = new THREE.PlaneGeometry(width, height, 1, 3);
+  geo.translate(0, height / 2, 0);
+  const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+  const heightFrac = new Float32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) {
+    const frac = THREE.MathUtils.clamp(pos.getY(i) / height, 0, 1);
+    pos.setX(i, pos.getX(i) * (1 - frac));
+    heightFrac[i] = frac;
+  }
+  pos.needsUpdate = true;
+  geo.setAttribute("heightFrac", new THREE.BufferAttribute(heightFrac, 1));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function grassMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    fog: true,
+    uniforms: {
+      uTime: { value: 0 },
+      fogColor: { value: new THREE.Color() },
+      fogNear: { value: 1 },
+      fogFar: { value: 1000 },
+    },
+    vertexShader: /* glsl */ `
+      attribute float heightFrac;
+      attribute float iRandom;
+      uniform float uTime;
+      varying float vHeightFrac;
+      varying float vRandom;
+      varying float vFacing;
+      #include <fog_pars_vertex>
+      void main() {
+        vHeightFrac = heightFrac;
+        vRandom = iRandom;
+
+        vec4 worldPos = instanceMatrix * vec4(position, 1.0);
+        float bend = heightFrac * heightFrac;
+        float sway = sin(uTime * 1.6 + worldPos.x * 0.9 + worldPos.z * 0.7) * 0.18 * bend;
+        worldPos.x += sway;
+        worldPos.z += sway * 0.6;
+
+        vec3 worldNormal = normalize(mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
+        vec3 viewDir = normalize(cameraPosition - worldPos.xyz);
+        vFacing = dot(worldNormal, viewDir);
+
+        vec4 mvPosition = modelViewMatrix * worldPos;
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying float vHeightFrac;
+      varying float vRandom;
+      varying float vFacing;
+      #include <fog_pars_fragment>
+      void main() {
+        // sRGB constants linearized so the colorspace conversion below is correct
+        vec3 rootColor = pow(vec3(0.247, 0.478, 0.2), vec3(2.2));
+        vec3 tipColor = pow(vec3(0.663, 0.851, 0.306), vec3(2.2));
+        float t = pow(clamp(vHeightFrac, 0.0, 1.0), 0.75);
+        vec3 color = mix(rootColor, tipColor, t);
+
+        // ±7% per-instance hue/brightness jitter
+        color *= 1.0 + (vRandom - 0.5) * 0.14;
+
+        // subtle darkening for blades facing away from the camera
+        float facingDark = smoothstep(-1.0, 0.2, vFacing);
+        color *= mix(0.82, 1.0, facingDark);
+
+        gl_FragColor = vec4(color, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+        #include <fog_fragment>
+      }
+    `,
+  });
+}
+
+export function GrassBlades({
+  exclusions,
+  seed,
+}: {
+  exclusions: Exclusion[];
+  seed: string;
+}) {
+  const mesh = useMemo(() => {
+    const geo = bladeGeometry(GRASS_BLADE_WIDTH, GRASS_BLADE_HEIGHT);
+    const material = grassMaterial();
+    const m = new THREE.InstancedMesh(geo, material, GRASS_COUNT);
+
+    const hw = WORLD_W / 2 + 3.4;
+    const hd = WORLD_D / 2 + 3.4;
+    const rnd = new Float32Array(GRASS_COUNT);
+    const mtx = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const s = new THREE.Vector3();
+    const p = new THREE.Vector3();
+    const axis = new THREE.Vector3(0, 1, 0);
+
+    let placedCount = 0;
+    let i = 0;
+    const maxTries = GRASS_COUNT * 3;
+    while (placedCount < GRASS_COUNT && i < maxTries) {
+      const x = (hash01(seed + "gx" + i) - 0.5) * 2 * hw;
+      const z = (hash01(seed + "gz" + i) - 0.5) * 2 * hd;
+      i++;
+      if (isExcluded(x, z, exclusions)) continue;
+      const ry = hash01(seed + "gr" + i) * Math.PI * 2;
+      const sc = 0.7 + hash01(seed + "gs" + i) * 0.8;
+      p.set(x, 0, z);
+      q.setFromAxisAngle(axis, ry);
+      s.set(1, sc, 1);
+      mtx.compose(p, q, s);
+      m.setMatrixAt(placedCount, mtx);
+      rnd[placedCount] = hash01(seed + "gh" + i);
+      placedCount++;
+    }
+    m.count = placedCount;
+    m.instanceMatrix.needsUpdate = true;
+    geo.setAttribute(
+      "iRandom",
+      new THREE.InstancedBufferAttribute(rnd.slice(0, placedCount), 1)
+    );
+    m.frustumCulled = false;
+    return m;
+  }, [exclusions, seed]);
+
+  useEffect(() => {
+    return () => {
+      mesh.geometry.dispose();
+      (mesh.material as THREE.Material).dispose();
+    };
+  }, [mesh]);
+
+  useFrame((state) => {
+    (mesh.material as THREE.ShaderMaterial).uniforms.uTime.value =
+      state.clock.elapsedTime;
+  });
+
+  return <primitive object={mesh} />;
+}
+
+/* ── Red plume grass — small clusters of thin crimson blades ───────── */
+export function RedGrass({
+  exclusions,
+  seed,
+}: {
+  exclusions: Exclusion[];
+  seed: string;
+}) {
+  const clusters = useMemo(() => {
+    const hw = WORLD_W / 2 + 1;
+    const hd = WORLD_D / 2 + 1;
+    const out: {
+      x: number;
+      z: number;
+      id: string;
+      blades: { ox: number; oz: number; h: number; ry: number }[];
+    }[] = [];
+    for (let ci = 0; ci < 14; ci++) {
+      let x = (hash01(seed + "rgx" + ci) - 0.5) * 2 * hw;
+      let z = (hash01(seed + "rgz" + ci) - 0.5) * 2 * hd;
+      let tries = 0;
+      while (isExcluded(x, z, exclusions) && tries < 10) {
+        x = (hash01(seed + "rgx2" + ci + "_" + tries) - 0.5) * 2 * hw;
+        z = (hash01(seed + "rgz2" + ci + "_" + tries) - 0.5) * 2 * hd;
+        tries++;
+      }
+      if (isExcluded(x, z, exclusions)) continue;
+      const bladeCount = 3 + Math.floor(hash01(seed + "rgn" + ci) * 3); // 3..5
+      const blades = Array.from({ length: bladeCount }, (_, bi) => {
+        const bSeed = seed + ci + "b" + bi;
+        return {
+          ox: (hash01("ox" + bSeed) - 0.5) * 0.22,
+          oz: (hash01("oz" + bSeed) - 0.5) * 0.22,
+          h: 0.25 + hash01("h" + bSeed) * 0.2,
+          ry: hash01("ry" + bSeed) * Math.PI * 2,
+        };
+      });
+      out.push({ x, z, id: "rg" + ci, blades });
+    }
+    return out;
+  }, [exclusions, seed]);
+
+  return (
+    <group>
+      {clusters.map((c) => (
+        <group key={c.id} position={[c.x, 0, c.z]}>
+          {c.blades.map((b, bi) => (
+            <mesh key={bi} position={[b.ox, b.h / 2, b.oz]} rotation={[0, b.ry, 0]}>
+              <coneGeometry args={[0.04, b.h, 5]} />
+              <meshStandardMaterial color="#c25848" roughness={0.85} />
+            </mesh>
+          ))}
+        </group>
       ))}
     </group>
   );
@@ -461,16 +799,17 @@ export function ACRoundTree({
         <cylinderGeometry args={[0.08, 0.11, 0.8, 7]} />
         {mat(AC.trunk)}
       </mesh>
+      {/* canopy spheres sized up ~15% for a fuller BOTW silhouette */}
       <mesh position={[0, 1.12, 0]} castShadow>
-        <sphereGeometry args={[0.56, 12, 10]} />
+        <sphereGeometry args={[0.644, 12, 10]} />
         {mat(AC.canopyMid)}
       </mesh>
       <mesh position={[0.26, 1.3, 0.14]} castShadow>
-        <sphereGeometry args={[0.34, 10, 8]} />
+        <sphereGeometry args={[0.391, 10, 8]} />
         {mat(AC.canopyLite)}
       </mesh>
       <mesh position={[-0.22, 1.22, -0.16]} castShadow>
-        <sphereGeometry args={[0.3, 10, 8]} />
+        <sphereGeometry args={[0.345, 10, 8]} />
         {mat(AC.canopyDeep)}
       </mesh>
     </group>
@@ -529,6 +868,91 @@ export function Bush({
         <sphereGeometry args={[0.5, 9, 7]} />
         {mat(AC.canopyDeep)}
       </mesh>
+    </group>
+  );
+}
+
+/* ── Boulders — big stylized rock clusters near island edges/corners ─ */
+export function Boulders({
+  exclusions,
+  seed,
+}: {
+  exclusions: Exclusion[];
+  seed: string;
+}) {
+  const clusters = useMemo(() => {
+    const hw = WORLD_W / 2 + 1.2;
+    const hd = WORLD_D / 2 + 1.2;
+    const anchors: { x: number; z: number }[] = [
+      { x: -hw, z: -hd },
+      { x: hw, z: -hd },
+      { x: -hw, z: hd },
+      { x: hw, z: hd },
+      { x: 0, z: -hd },
+      { x: 0, z: hd },
+    ];
+    return anchors.map((a, ci) => {
+      let x = a.x + (hash01(seed + "bx" + ci) - 0.5) * 3;
+      let z = a.z + (hash01(seed + "bz" + ci) - 0.5) * 3;
+      let tries = 0;
+      while (isExcluded(x, z, exclusions) && tries < 8) {
+        x += (hash01(seed + "bnx" + ci + "_" + tries) - 0.5) * 2;
+        z += (hash01(seed + "bnz" + ci + "_" + tries) - 0.5) * 2;
+        tries++;
+      }
+      const rockCount = 2 + Math.floor(hash01(seed + "brc" + ci) * 2); // 2..3
+      const rocks = Array.from({ length: rockCount }, (_, ri) => {
+        const rSeed = seed + ci + "br" + ri;
+        const radius = 0.7 + hash01(rSeed + "rad") * 1.3;
+        return {
+          ox: (hash01("ox" + rSeed) - 0.5) * radius * 1.1,
+          oz: (hash01("oz" + rSeed) - 0.5) * radius * 1.1,
+          radius,
+          rx: hash01(rSeed + "rx") * Math.PI,
+          ry: hash01(rSeed + "ry") * Math.PI,
+          rz: hash01(rSeed + "rz") * Math.PI,
+          top: ri === rockCount - 1,
+        };
+      });
+      const mossR =
+        1.05 + hash01(seed + "moss" + ci) * 0.5;
+      return { x, z, id: "bo" + ci, rocks, mossR };
+    });
+  }, [exclusions, seed]);
+
+  return (
+    <group>
+      {clusters.map((c) => (
+        <group key={c.id} position={[c.x, 0, c.z]}>
+          <mesh
+            rotation={[-Math.PI / 2, 0, 0]}
+            position={[0, 0.008, 0]}
+            receiveShadow
+          >
+            <circleGeometry args={[c.mossR, 20]} />
+            <meshStandardMaterial
+              color="#5c9a45"
+              roughness={1}
+              transparent
+              opacity={0.5}
+              depthWrite={false}
+            />
+          </mesh>
+          {c.rocks.map((r, ri) => (
+            <mesh
+              key={ri}
+              position={[r.ox, r.radius * 0.65, r.oz]}
+              rotation={[r.rx, r.ry, r.rz]}
+              scale={[r.radius, r.radius * 0.72, r.radius]}
+              castShadow
+              receiveShadow
+            >
+              <dodecahedronGeometry args={[1, 0]} />
+              {mat(r.top ? "#c2cbc6" : "#97a3a6", { roughness: 0.9 })}
+            </mesh>
+          ))}
+        </group>
+      ))}
     </group>
   );
 }

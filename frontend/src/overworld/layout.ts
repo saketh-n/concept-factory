@@ -33,7 +33,7 @@ export interface Edge {
 export const WORLD_W = 28;
 export const WORLD_D = 20;
 export const ENTER_DIST = 2.3;
-export const MOVE_SPEED = 5.0;
+export const MOVE_SPEED = 4.2;
 
 export function hash01(s: string): number {
   let h = 2166136261;
