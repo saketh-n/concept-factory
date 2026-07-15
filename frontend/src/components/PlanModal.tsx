@@ -59,7 +59,7 @@ function BuiltPanel({
         </div>
         <div className="flex gap-2">
           <input
-            className="flex-1 rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-violet-400/40"
+            className="field flex-1"
             placeholder="e.g. add a dark-mode toggle, or two harder levels…"
             value={request}
             onChange={(e) => setRequest(e.target.value)}
@@ -68,7 +68,7 @@ function BuiltPanel({
           <button
             onClick={improve}
             disabled={!request.trim()}
-            className="rounded-lg bg-violet-400/15 px-4 py-2 text-sm font-medium text-violet-200 ring-1 ring-inset ring-violet-400/30 hover:bg-violet-400/25 disabled:opacity-40"
+            className="btn-primary"
           >
             Improve
           </button>
@@ -152,7 +152,7 @@ function StreamLog({ topicId }: { topicId: string }) {
   return (
     <div
       ref={boxRef}
-      className="h-[52vh] overflow-y-auto rounded-lg border border-white/[0.06] bg-ink p-4 font-mono text-[0.8rem] leading-relaxed text-slate-300"
+      className="h-[52vh] overflow-y-auto rounded-lg border border-white/[0.06] bg-well p-4 font-mono text-[0.8rem] leading-relaxed text-slate-300"
     >
       {lines.length === 0 ? (
         <span className="text-slate-500">Waiting for Grok…</span>
@@ -214,7 +214,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0e1117] shadow-2xl shadow-black/60"
+        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -231,7 +231,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
             {topic.plan && !busy && !editing && (
               <button
                 onClick={() => setEditing(true)}
-                className="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/[0.05]"
+                className="btn-secondary"
               >
                 Edit
               </button>
@@ -239,14 +239,14 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
             {editing && (
               <button
                 onClick={() => setEditing(false)}
-                className="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/[0.05]"
+                className="btn-secondary"
               >
                 Preview
               </button>
             )}
             <button
               onClick={onClose}
-              className="rounded-lg px-2 py-1.5 text-slate-500 hover:bg-white/[0.06] hover:text-slate-300"
+              className="rounded-lg px-2 py-1.5 text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-300"
             >
               ✕
             </button>
@@ -264,7 +264,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
             </div>
           ) : editing ? (
             <textarea
-              className="h-[52vh] w-full resize-none rounded-lg border border-white/10 bg-ink p-4 font-mono text-sm text-slate-200 outline-none focus:border-violet-400/40"
+              className="field h-[52vh] w-full resize-none p-4 font-mono text-sm"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
             />
@@ -289,16 +289,16 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
             </span>
             <button
               onClick={viewConcept}
-              className="rounded-full bg-emerald-400/15 px-5 py-2 text-sm font-medium text-emerald-200 ring-1 ring-inset ring-emerald-400/40 transition hover:bg-emerald-400/25 active:scale-95"
+              className="btn-primary"
             >
-              View Concept →
+              View concept →
             </button>
           </div>
         ) : !busy && topic.plan ? (
           <div className="space-y-3 border-t border-white/[0.07] bg-white/[0.02] px-6 py-4">
             <div className="flex gap-2">
               <input
-                className="flex-1 rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-violet-400/40"
+                className="field flex-1"
                 placeholder="Ask Grok to refine the plan…"
                 value={refine}
                 onChange={(e) => setRefine(e.target.value)}
@@ -307,7 +307,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
               <button
                 onClick={sendRefine}
                 disabled={!refine.trim()}
-                className="rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-white/[0.05] disabled:opacity-40"
+                className="btn-secondary"
               >
                 Refine
               </button>
@@ -317,7 +317,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
                 <button
                   onClick={save}
                   disabled={saving}
-                  className="rounded-lg bg-violet-400/15 px-4 py-2 text-sm font-medium text-violet-200 ring-1 ring-inset ring-violet-400/30 hover:bg-violet-400/25 disabled:opacity-50"
+                  className="btn-secondary !border-violet-400/40 !bg-violet-400/10 !text-violet-200"
                 >
                   {saving ? "Saving…" : "Save edits"}
                 </button>
@@ -328,7 +328,7 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
               )}
               <button
                 onClick={build}
-                className="rounded-full bg-emerald-400/15 px-5 py-2 text-sm font-medium text-emerald-200 ring-1 ring-inset ring-emerald-400/40 transition hover:bg-emerald-400/25 active:scale-95"
+                className="btn-primary"
               >
                 Approve & build
               </button>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Credits } from "../api";
+import { IconRefresh } from "./icons";
 
 /**
  * Live dollar credit balance from console.x.ai (Management API prepaid).
@@ -171,8 +172,8 @@ export default function CreditsHud({
   const free = pos != null || variant === "floating";
 
   const shell = free
-    ? "fixed z-50 max-w-[min(320px,calc(100vw-28px))]"
-    : "relative shrink-0 max-w-[240px]";
+    ? "fixed z-50 max-w-[min(300px,calc(100vw-28px))]"
+    : "relative shrink-0 max-w-[160px]";
 
   const style: React.CSSProperties | undefined = free
     ? {
@@ -186,8 +187,8 @@ export default function CreditsHud({
   return (
     <div
       ref={rootRef}
-      className={`${shell} flex items-center gap-2.5 rounded-[14px] border border-white/10 bg-[#0e1017]/90 px-3 py-1.5 text-slate-200 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-md select-none ${
-        dragging ? "border-violet-400/40 shadow-[0_12px_32px_rgba(0,0,0,0.5)]" : ""
+      className={`${shell} flex select-none items-center gap-2.5 rounded-xl border border-white/10 bg-well/90 px-3 py-1.5 text-slate-200 shadow-card backdrop-blur-md ${
+        dragging ? "border-emerald-400/40 shadow-pop" : ""
       }`}
       style={style}
       title={
@@ -200,30 +201,43 @@ export default function CreditsHud({
       onDoubleClick={resetPos}
     >
       <span
-        className={`h-2.5 w-2.5 shrink-0 rounded-full ${DOT[tone]}`}
+        className={`h-2 w-2 shrink-0 rounded-full ${DOT[tone]}`}
         aria-hidden
       />
       <div className="min-w-0 flex-1">
-        <div className="text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500">
-          Credits
-        </div>
-        <div className="truncate text-[12.5px] font-semibold tabular-nums text-slate-100">
+        <div className="truncate text-[12px] font-semibold leading-tight tabular-nums text-slate-100">
           {credits?.label ?? "Loading…"}
         </div>
-        {pct != null && (
-          <div
-            className="mt-1 h-1 overflow-hidden rounded-full bg-white/[0.08]"
-            title={`${pct}% of prepaid left`}
-          >
+        {free ? (
+          <>
+            {pct != null && (
+              <div
+                className="mt-1 h-1 overflow-hidden rounded-full bg-white/[0.08]"
+                title={`${pct}% of prepaid left`}
+              >
+                <div
+                  className={`h-full rounded-full bg-gradient-to-r ${BAR[tone]} transition-all duration-500`}
+                  style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
+                />
+              </div>
+            )}
+            <div className="mt-0.5 truncate font-mono text-[9.5px] text-slate-500">
+              {credits?.detail ?? "Fetching…"}
+            </div>
+          </>
+        ) : (
+          pct != null && (
             <div
-              className={`h-full rounded-full bg-gradient-to-r ${BAR[tone]} transition-all duration-500`}
-              style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
-            />
-          </div>
+              className="mt-[3px] h-[3px] w-full max-w-[72px] overflow-hidden rounded-full bg-white/[0.08]"
+              title={`${pct}% of prepaid left`}
+            >
+              <div
+                className={`h-full rounded-full bg-gradient-to-r ${BAR[tone]} transition-all duration-500`}
+                style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
+              />
+            </div>
+          )
         )}
-        <div className="mt-0.5 truncate font-mono text-[9.5px] text-slate-500">
-          {credits?.detail ?? "Fetching…"}
-        </div>
       </div>
       <button
         type="button"
@@ -232,10 +246,10 @@ export default function CreditsHud({
           refresh(true);
         }}
         onPointerDown={(e) => e.stopPropagation()}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-xs text-slate-400 hover:bg-white/10 hover:text-slate-200"
+        className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-white/[0.06] text-slate-400 transition hover:bg-white/10 hover:text-slate-200"
         title="Refresh from console.x.ai"
       >
-        ↻
+        <IconRefresh size={11} />
       </button>
     </div>
   );

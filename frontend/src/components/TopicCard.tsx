@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { conceptUrl, type Topic } from "../api";
 import FullstackControl from "./FullstackControl";
+import { IconArrowRight, IconCheck, IconExternal, IconX } from "./icons";
 
 interface Props {
   topic: Topic;
@@ -17,7 +18,7 @@ interface Props {
   entering?: boolean;
 }
 
-/** Lifecycle → color. In a control room, color means state, nothing else. */
+/** Lifecycle → color. Color always means state, nothing else. */
 const PLAN_META: Record<
   Topic["planStatus"],
   { label: string; rail: string; badge: string; pulse?: boolean }
@@ -30,34 +31,34 @@ const PLAN_META: Record<
   queued: {
     label: "Queued",
     rail: "bg-slate-400/70",
-    badge: "bg-slate-400/10 text-slate-300 ring-slate-400/20",
+    badge: "bg-slate-400/10 text-slate-300 ring-slate-400/25",
   },
   planning: {
     label: "Planning",
-    rail: "bg-amber-400",
-    badge: "bg-amber-400/10 text-amber-300 ring-amber-400/25",
+    rail: "bg-violet-400",
+    badge: "bg-violet-400/10 text-violet-300 ring-violet-400/30",
     pulse: true,
   },
   ready: {
     label: "Plan ready",
-    rail: "bg-violet-400",
-    badge: "bg-violet-400/10 text-violet-300 ring-violet-400/25",
+    rail: "bg-sky-400",
+    badge: "bg-sky-400/10 text-sky-300 ring-sky-400/30",
   },
   building: {
     label: "Building",
     rail: "bg-amber-400",
-    badge: "bg-amber-400/10 text-amber-300 ring-amber-400/25",
+    badge: "bg-amber-400/10 text-amber-300 ring-amber-400/30",
     pulse: true,
   },
   built: {
     label: "Built",
     rail: "bg-emerald-400",
-    badge: "bg-emerald-400/20 text-emerald-200 ring-emerald-400/40",
+    badge: "bg-emerald-400/15 text-emerald-300 ring-emerald-400/35",
   },
   error: {
     label: "Error",
     rail: "bg-rose-400",
-    badge: "bg-rose-400/10 text-rose-300 ring-rose-400/25",
+    badge: "bg-rose-400/10 text-rose-300 ring-rose-400/30",
   },
 };
 
@@ -92,12 +93,12 @@ export default function TopicCard({
   const selectable = topic.planStatus === "ready";
 
   // Once built, the card carries a second axis — review state — as a whole-card
-  // tint: rose until a human signs off, emerald once reviewed.
+  // tint: amber until a human signs off, quiet emerald once reviewed.
   const cardTint = built
     ? topic.reviewed
-      ? "border-emerald-400/25 bg-emerald-400/[0.04] hover:border-emerald-400/35 hover:bg-emerald-400/[0.06]"
-      : "border-rose-400/25 bg-rose-400/[0.04] hover:border-rose-400/35 hover:bg-rose-400/[0.06]"
-    : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.14] hover:bg-white/[0.03]";
+      ? "border-white/[0.07] bg-panel hover:border-white/[0.13]"
+      : "border-amber-400/25 bg-amber-400/[0.03] hover:border-amber-400/40"
+    : "border-white/[0.07] bg-panel hover:border-white/[0.13]";
   const clickable = ["ready", "planning", "building", "built", "error"].includes(
     topic.planStatus
   );
@@ -123,26 +124,27 @@ export default function TopicCard({
 
   const action =
     topic.planStatus === "ready"
-      ? { label: "Review plan →", onClick: onOpenPlan }
+      ? { label: "Review plan", onClick: onOpenPlan, external: false }
       : topic.planStatus === "planning" || topic.planStatus === "building"
-        ? { label: "Watch live →", onClick: onOpenPlan }
+        ? { label: "Watch live", onClick: onOpenPlan, external: false }
         : topic.planStatus === "error"
-          ? { label: "See details →", onClick: onOpenPlan }
+          ? { label: "See details", onClick: onOpenPlan, external: false }
           : topic.planStatus === "built"
             ? {
-                label: "Open concept →",
+                label: "Open concept",
                 onClick: () => window.open(conceptUrl(topic.slug), "_blank"),
+                external: true,
               }
             : null;
 
   return (
     <div
-      className={`group relative overflow-hidden rounded-xl border transition-colors ${cardTint} ${
+      className={`group relative overflow-hidden rounded-xl border shadow-card transition-colors ${cardTint} ${
         selected ? "ring-2 ring-inset ring-violet-400/60" : ""
       } ${merging ? "merge-out" : ""} ${entering ? "merge-in" : ""}`}
     >
-      {/* Signature: the status rail. Color = lifecycle state; pulses while a
-          Grok instance is live on this topic. */}
+      {/* Signature: the status rail. Color = lifecycle state; pulses while an
+          agent is live on this topic. */}
       <span
         className={`absolute inset-y-0 left-0 w-[3px] ${status.rail} ${
           status.pulse ? "animate-pulse" : ""
@@ -150,7 +152,7 @@ export default function TopicCard({
         aria-hidden
       />
 
-      <div className="flex flex-col gap-2 py-3 pl-5 pr-4">
+      <div className="flex flex-col gap-1.5 py-3 pl-5 pr-4">
         {/* Row 1: [select] title · status · action · delete */}
         <div className="flex items-center gap-3">
           {selectable && onToggleSelect && (
@@ -163,7 +165,7 @@ export default function TopicCard({
             />
           )}
           <input
-            className="min-w-0 flex-1 bg-transparent font-display text-[0.95rem] font-semibold text-slate-100 outline-none placeholder:text-slate-600"
+            className="min-w-0 flex-1 bg-transparent text-[14.5px] font-semibold tracking-tight text-slate-100 outline-none placeholder:text-slate-600"
             value={draft.title}
             placeholder="Untitled topic"
             onChange={(e) => setDraft({ ...draft, title: e.target.value })}
@@ -174,12 +176,12 @@ export default function TopicCard({
             <button
               onClick={clickable ? onOpenPlan : undefined}
               disabled={!clickable}
-              className={`shrink-0 rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium uppercase tracking-wide ring-1 ring-inset ${status.badge} ${
+              className={`badge ${status.badge} ${
                 clickable ? "cursor-pointer hover:brightness-125" : "cursor-default"
               }`}
             >
               {status.pulse && (
-                <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current align-middle" />
+                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
               )}
               {status.label}
             </button>
@@ -188,10 +190,10 @@ export default function TopicCard({
           {built && (
             <button
               onClick={() => onChange({ reviewed: !topic.reviewed })}
-              className={`shrink-0 rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium uppercase tracking-wide ring-1 ring-inset transition ${
+              className={`badge transition ${
                 topic.reviewed
-                  ? "bg-emerald-400/15 text-emerald-200 ring-emerald-400/35 hover:brightness-110"
-                  : "bg-rose-400/10 text-rose-300 ring-rose-400/30 hover:bg-rose-400/20"
+                  ? "bg-emerald-400/10 text-emerald-300/90 ring-emerald-400/25 hover:brightness-110"
+                  : "bg-amber-400/10 text-amber-300 ring-amber-400/30 hover:bg-amber-400/20"
               }`}
               title={
                 topic.reviewed
@@ -199,31 +201,46 @@ export default function TopicCard({
                   : "Not yet reviewed — click to mark reviewed"
               }
             >
-              {topic.reviewed ? "✓ Reviewed" : "Needs review"}
+              {topic.reviewed ? (
+                <>
+                  <IconCheck size={10} /> Reviewed
+                </>
+              ) : (
+                "Needs review"
+              )}
             </button>
           )}
 
           {action && (
             <button
               onClick={action.onClick}
-              className="shrink-0 text-xs font-medium text-violet-300 transition-colors hover:text-violet-200"
+              className="flex shrink-0 items-center gap-1 text-[12.5px] font-medium text-emerald-300/90 transition-colors hover:text-emerald-200"
             >
               {action.label}
+              {action.external ? (
+                <IconExternal size={11} />
+              ) : (
+                <IconArrowRight size={11} />
+              )}
             </button>
           )}
 
           <button
             onClick={onDelete}
-            className="shrink-0 rounded-md px-1.5 py-0.5 text-slate-600 opacity-0 transition hover:bg-rose-400/10 hover:text-rose-300 focus-visible:opacity-100 group-hover:opacity-100"
+            className="shrink-0 rounded-md p-1 text-slate-600 opacity-0 transition hover:bg-rose-400/10 hover:text-rose-300 focus-visible:opacity-100 group-hover:opacity-100"
             title="Delete topic"
           >
-            ✕
+            <IconX size={12} />
           </button>
         </div>
 
-        {/* Row 2: blurb (only takes space when present or focused) */}
+        {/* Row 2: blurb — collapsed entirely until it has content, hover, or focus */}
         <AutoTextarea
-          className="w-full resize-none bg-transparent text-[0.85rem] leading-relaxed text-slate-400 outline-none placeholder:text-transparent placeholder:transition-colors focus:placeholder:text-slate-600 group-hover:placeholder:text-slate-600"
+          className={`${
+            draft.blurb.trim()
+              ? ""
+              : "hidden group-focus-within:block group-hover:block"
+          } w-full resize-none bg-transparent text-[13px] leading-relaxed text-slate-400 outline-none placeholder:text-transparent placeholder:transition-colors focus:placeholder:text-slate-600 group-hover:placeholder:text-slate-600`}
           value={draft.blurb}
           placeholder="A brief blurb…"
           onChange={(e) => setDraft({ ...draft, blurb: e.target.value })}
@@ -233,7 +250,7 @@ export default function TopicCard({
         {/* Row 3: breadcrumb path · notes toggle */}
         <div className="flex items-center gap-3">
           <input
-            className="min-w-0 flex-1 rounded-md bg-transparent px-0 font-mono text-[11px] text-slate-500 opacity-40 outline-none transition-opacity placeholder:text-transparent focus:opacity-100 focus:placeholder:text-slate-600 group-hover:opacity-100 group-hover:placeholder:text-slate-600"
+            className="min-w-0 flex-1 rounded-md bg-transparent px-0 font-mono text-[11px] text-slate-500 opacity-50 outline-none transition-opacity placeholder:text-transparent focus:opacity-100 focus:placeholder:text-slate-600 group-hover:opacity-100 group-hover:placeholder:text-slate-600"
             value={pathText}
             placeholder="Group > Subgroup — type to move this card"
             title="Hierarchy path — edit to move this card to another group"
@@ -257,7 +274,7 @@ export default function TopicCard({
             </span>
             notes
             {topic.notes.trim() && (
-              <span className="ml-1.5 inline-block h-1 w-1 rounded-full bg-violet-400/70 align-middle" />
+              <span className="ml-1.5 inline-block h-1 w-1 rounded-full bg-emerald-400/80 align-middle" />
             )}
           </button>
         </div>
@@ -266,7 +283,7 @@ export default function TopicCard({
         {notesOpen && (
           <AutoTextarea
             autoFocus
-            className="min-h-[3.5rem] w-full resize-none rounded-lg border border-white/[0.06] bg-well p-3 text-[0.85rem] leading-relaxed text-slate-300 outline-none placeholder:text-slate-600"
+            className="field min-h-[3.5rem] w-full resize-none text-[13px] leading-relaxed"
             value={draft.notes}
             placeholder="Notes for the agent — angle, gotchas, what to emphasize…"
             onChange={(e) => setDraft({ ...draft, notes: e.target.value })}

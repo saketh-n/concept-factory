@@ -14,15 +14,18 @@ import {
   nodeAtPath,
   layoutStops,
   labelOf,
+  WORLD_W,
+  WORLD_D,
   type MapStop,
   type PlacedStop,
 } from "../overworld/layout";
 import OverworldScene from "../overworld/Scene";
 
 /**
- * Animal Crossing–style 3D overworld.
- * Soft grass, dirt paths, log cabins, pine forests, cute walker.
+ * 3D overworld — a cozy island diorama.
+ * Every group is a house, every topic a cottage; walk between them.
  * WASD / arrows to walk · Enter to open · Esc to go back.
+ * All chrome lives inside the stage as a game HUD.
  */
 
 type Keys = Record<string, boolean>;
@@ -70,7 +73,7 @@ export default function WorldMap({
   // Reset player when world changes
   useEffect(() => {
     if (placed.length > 0) {
-      playerRef.current = { x: placed[0].x, z: placed[0].z + 2.4 };
+      playerRef.current = { x: placed[0].x, z: placed[0].z + 2.0 };
     } else {
       playerRef.current = { x: 0, z: 2 };
     }
@@ -186,14 +189,26 @@ export default function WorldMap({
     return [];
   }, [showPanel, near]);
 
+  const regionTitle = navPath.length === 0 ? "Overworld" : current.name || "World";
   const breadcrumb =
-    navPath.length === 0 ? "Overworld" : navPath.join("  →  ");
+    navPath.length === 0
+      ? `${placed.length} stop${placed.length === 1 ? "" : "s"} on the island`
+      : ["Overworld", ...navPath].join(" › ");
 
-  // Minimap
-  const miniW = 280;
-  const miniH = 72;
-  const sx = miniW / 28;
-  const sy = miniH / 20;
+  // Progress for the current region (root shows the whole library).
+  const regionBuilt = navPath.length === 0 ? tree.built : current.built;
+  const regionCount = navPath.length === 0 ? tree.count : current.count;
+  const regionPct =
+    regionCount > 0 ? Math.round((regionBuilt / regionCount) * 100) : 0;
+
+  // Minimap — true world aspect (WORLD_W × WORLD_D plus a margin).
+  const PAD = 3;
+  const mapW = WORLD_W + PAD * 2;
+  const mapD = WORLD_D + PAD * 2;
+  const miniW = 172;
+  const miniH = Math.round((miniW * mapD) / mapW);
+  const mx = (x: number) => ((x + WORLD_W / 2 + PAD) / mapW) * miniW;
+  const mz = (z: number) => ((z + WORLD_D / 2 + PAD) / mapD) * miniH;
   const [playerBlip, setPlayerBlip] = useState({ x: 0, z: 2 });
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -204,29 +219,7 @@ export default function WorldMap({
 
   return (
     <div className="world-map-root">
-      {/* HUD */}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="ac-hud-title">
-            {navPath.length === 0
-              ? "☀ Overworld"
-              : `🏡 ${current.name || "World"}`}
-          </span>
-          <span className="ac-hud-crumb">{breadcrumb}</span>
-        </div>
-        <div className="flex items-center gap-3">
-          {navPath.length > 0 && (
-            <button type="button" onClick={goBack} className="ac-btn">
-              ← Map
-            </button>
-          )}
-          <span className="hidden text-[11px] text-white/50 sm:inline">
-            Drag orbit · Scroll zoom · WASD walk · Enter open
-          </span>
-        </div>
-      </div>
-
-      {/* 3D stage */}
+      {/* 3D stage + in-game HUD */}
       <div className="ac-stage">
         <Canvas
           shadows
@@ -235,15 +228,15 @@ export default function WorldMap({
             position: [0.3, 10.5, 9.2],
             fov: 40,
             near: 0.1,
-            far: 80,
+            far: 120,
           }}
           gl={{
             antialias: true,
             toneMapping: THREE.ACESFilmicToneMapping,
-            toneMappingExposure: 1.08,
+            toneMappingExposure: 1.05,
           }}
           onCreated={({ gl }) => {
-            gl.setClearColor("#B8DCF0");
+            gl.setClearColor("#8ec4e8");
             gl.shadowMap.enabled = true;
             gl.shadowMap.type = THREE.PCFSoftShadowMap;
           }}
@@ -261,39 +254,77 @@ export default function WorldMap({
           />
         </Canvas>
 
-        <div className="ac-corner-hud">
-          <span className="ac-corner-world">
-            {navPath.length === 0 ? "W★" : `W${navPath.length}`}
+        {/* Location plate */}
+        <div className="hud-plate">
+          <span className="hud-plate-eyebrow">
+            {navPath.length === 0
+              ? "Region · Overworld"
+              : navPath.length === 1
+                ? "Region · World"
+                : "Region · Course"}
           </span>
-          <span className="ac-corner-count">
-            {placed.length} spot{placed.length === 1 ? "" : "s"}
-          </span>
+          <span className="hud-plate-title">{regionTitle}</span>
+          <span className="hud-plate-sub">{breadcrumb}</span>
         </div>
 
-        {placed.length === 0 && (
-          <div className="ac-empty">
-            <p>
-              No spots on this island yet.
-              <br />
-              <span>Add topics with World &gt; Course &gt; Level</span>
-            </p>
+        {/* Region progress */}
+        {regionCount > 0 && (
+          <div className="hud-progress" title={`${regionBuilt} of ${regionCount} concepts built`}>
+            <span className="hud-progress-bar">
+              <span
+                className="hud-progress-fill"
+                style={{ width: `${regionPct}%`, display: "block" }}
+              />
+            </span>
+            {regionBuilt}/{regionCount} built
           </div>
         )}
-      </div>
 
-      {/* Minimap strip */}
-      <div className="ac-minibar mt-3">
-        <div className="ac-minibar-title">
-          <span className="ac-minibar-name">
-            {navPath.length === 0 ? "Overworld" : current.name || "World"}
+        {/* Back — only when inside a world or a panel is open */}
+        {(navPath.length > 0 || showPanel) && (
+          <button type="button" onClick={goBack} className="hud-back">
+            ← {showPanel ? "Close" : "Back"}
+            <span className="kbd">esc</span>
+          </button>
+        )}
+
+        {/* Controls */}
+        <div className="hud-keys">
+          <span className="hud-key-group">
+            <span className="kbd">W</span>
+            <span className="kbd">A</span>
+            <span className="kbd">S</span>
+            <span className="kbd">D</span>
+            walk
           </span>
-          <span className="ac-minibar-hint">
-            walk to a cottage · Enter to go in
+          <span className="hud-key-group">
+            <span className="kbd">↵</span>
+            enter
+          </span>
+          <span className="hud-key-group hidden sm:flex">
+            <span className="kbd">drag</span>
+            orbit
+          </span>
+          <span className="hud-key-group hidden sm:flex">
+            <span className="kbd">scroll</span>
+            zoom
           </span>
         </div>
-        <div className="ac-minimap" style={{ width: miniW, height: miniH }}>
+
+        {/* Minimap */}
+        <div className="hud-minimap" style={{ width: miniW, height: miniH }}>
           <svg width={miniW} height={miniH} viewBox={`0 0 ${miniW} ${miniH}`}>
-            <rect width={miniW} height={miniH} fill="#8FBF6A" rx="4" />
+            <rect width={miniW} height={miniH} fill="rgba(13,23,20,0.55)" />
+            <rect
+              x={mx(-WORLD_W / 2)}
+              y={mz(-WORLD_D / 2)}
+              width={mx(WORLD_W / 2) - mx(-WORLD_W / 2)}
+              height={mz(WORLD_D / 2) - mz(-WORLD_D / 2)}
+              rx={10}
+              fill="rgba(96,160,90,0.35)"
+              stroke="rgba(150,210,140,0.35)"
+              strokeWidth="1"
+            />
             {edges.map((e, i) => {
               const A = placed[e.a];
               const B = placed[e.b];
@@ -301,12 +332,12 @@ export default function WorldMap({
               return (
                 <line
                   key={i}
-                  x1={(A.x + 14) * sx}
-                  y1={(A.z + 10) * sy}
-                  x2={(B.x + 14) * sx}
-                  y2={(B.z + 10) * sy}
-                  stroke="#C4A06A"
-                  strokeWidth="3"
+                  x1={mx(A.x)}
+                  y1={mz(A.z)}
+                  x2={mx(B.x)}
+                  y2={mz(B.z)}
+                  stroke="rgba(222,190,140,0.5)"
+                  strokeWidth="2"
                   strokeLinecap="round"
                 />
               );
@@ -316,35 +347,50 @@ export default function WorldMap({
               return (
                 <circle
                   key={p.stop.id}
-                  cx={(p.x + 14) * sx}
-                  cy={(p.z + 10) * sy}
-                  r={active ? 5 : 3.5}
-                  fill={active ? "#F0C94A" : "#5B9CFF"}
-                  stroke={active ? "#fff" : "#3A5A20"}
-                  strokeWidth="1.2"
+                  cx={mx(p.x)}
+                  cy={mz(p.z)}
+                  r={active ? 4 : 2.8}
+                  fill={active ? "#fbbf24" : "#e2e8f0"}
+                  stroke={active ? "#fff" : "rgba(255,255,255,0.4)"}
+                  strokeWidth="1"
                 />
               );
             })}
             <circle
-              cx={(playerBlip.x + 14) * sx}
-              cy={(playerBlip.z + 10) * sy}
-              r={4.5}
-              fill="#3D5FBF"
-              stroke="#fff"
+              cx={mx(playerBlip.x)}
+              cy={mz(playerBlip.z)}
+              r={4}
+              fill="#34d399"
+              stroke="#052e1b"
               strokeWidth="1.5"
             />
           </svg>
         </div>
+
+        {placed.length === 0 && (
+          <div className="ac-empty">
+            <p>
+              No stops on this island yet.
+              <br />
+              <span>Add topics with World &gt; Course &gt; Level</span>
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Level card panel */}
       {panelTopics.length > 0 && (
         <div className="level-panel mt-5">
           <div className="mb-3 flex items-center gap-2">
-            <span className="inline-block h-3 w-3 rounded-full bg-[#5DCF7A] shadow-[0_0_0_3px_rgba(93,207,122,0.25)]" />
-            <h3 className="text-sm font-semibold tracking-wide text-[#E8F5D8]">
-              {near?.stop.kind === "ungrouped" ? "Loose levels" : "Level card"}
-              {near ? ` · ${labelOf(near.stop)}` : ""}
+            <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.2)]" />
+            <h3 className="font-display text-[13.5px] font-semibold tracking-tight text-slate-100">
+              {near?.stop.kind === "ungrouped" ? "Loose levels" : "Level"}
+              {near ? (
+                <span className="font-normal text-slate-400">
+                  {" "}
+                  · {labelOf(near.stop)}
+                </span>
+              ) : null}
             </h3>
           </div>
           <div className="flex flex-col gap-2">

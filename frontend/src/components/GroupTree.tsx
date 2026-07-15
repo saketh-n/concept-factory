@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Topic } from "../api";
+import { IconChevronRight } from "./icons";
 
 /**
  * Finder-style collapsible tree derived from each topic's `path`.
@@ -93,31 +94,30 @@ function ReviewBar({
   built: number;
 }) {
   const frac = count > 0 ? reviewed / count : 0;
-  const hue = Math.round(frac * 140); // 0 = red, 140 = green
-  const fill = `hsl(${hue} 68% 47%)`;
+  const done = frac >= 1;
   return (
-    <span className="flex items-center gap-2">
+    <span className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
       <span
-        className="inline-flex items-center gap-2 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1"
+        className="inline-flex items-center gap-2"
         title={`${reviewed} of ${count} reviewed`}
       >
-        <span className="font-mono text-[11px] font-medium tabular-nums text-emerald-200/90">
-          {reviewed}/{count} Reviewed
-        </span>
-        <span className="h-1.5 w-14 overflow-hidden rounded-full bg-white/10">
+        <span className="h-1 w-16 overflow-hidden rounded-full bg-white/[0.08]">
           <span
-            className="block h-full rounded-full transition-all duration-500"
-            style={{ width: `${Math.round(frac * 100)}%`, backgroundColor: fill }}
+            className={`block h-full rounded-full transition-all duration-500 ${
+              done ? "bg-emerald-400" : "bg-amber-400"
+            }`}
+            style={{ width: `${Math.round(frac * 100)}%` }}
           />
+        </span>
+        <span className="font-mono text-[10.5px] font-medium tabular-nums text-slate-500">
+          {reviewed}/{count} reviewed
         </span>
       </span>
       <span
-        className="inline-flex items-center rounded-full border border-sky-400/25 bg-sky-400/10 px-2.5 py-1"
+        className="font-mono text-[10.5px] font-medium tabular-nums text-slate-500"
         title={`${built} of ${count} built`}
       >
-        <span className="font-mono text-[11px] font-medium tabular-nums text-sky-200/90">
-          {built}/{count} Built
-        </span>
+        {built}/{count} built
       </span>
     </span>
   );
@@ -138,22 +138,22 @@ function Group({
 }) {
   const isCollapsed = collapsed.has(node.key);
   return (
-    <div className={depth > 0 ? "ml-[7px] border-l border-white/[0.07] pl-5" : ""}>
+    <div className={depth > 0 ? "ml-[13px] border-l border-white/[0.06] pl-5" : ""}>
       <button
         onClick={() => toggle(node.key)}
-        className="mb-2.5 mt-1 flex w-full items-baseline gap-2.5 text-left"
+        className="group/header mb-2.5 mt-1 flex w-full items-center gap-2.5 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-white/[0.02]"
       >
         <span
-          className={`inline-block translate-y-[-1px] text-[11px] text-slate-500 transition-transform ${
+          className={`inline-flex text-slate-500 transition-transform group-hover/header:text-slate-300 ${
             isCollapsed ? "" : "rotate-90"
           }`}
           aria-hidden
         >
-          ▶
+          <IconChevronRight size={13} />
         </span>
         <span
           className={`font-display font-semibold tracking-tight text-slate-100 ${
-            depth === 0 ? "text-[1.15rem]" : depth === 1 ? "text-[1rem]" : "text-[0.9rem]"
+            depth === 0 ? "text-[1.05rem]" : depth === 1 ? "text-[0.95rem]" : "text-[0.875rem]"
           }`}
         >
           {node.name}
@@ -218,18 +218,15 @@ export default function GroupTree({
 
   return (
     <div>
-      <div className="mb-5 flex gap-4 font-mono text-[11px] text-slate-500">
-        <button
-          onClick={() => setCollapsed(new Set())}
-          className="transition-colors hover:text-violet-300"
-        >
-          expand all
+      <div className="mb-4 flex gap-1">
+        <button onClick={() => setCollapsed(new Set())} className="btn-ghost !text-[11.5px]">
+          Expand all
         </button>
         <button
           onClick={() => setCollapsed(new Set(collectKeys(tree)))}
-          className="transition-colors hover:text-violet-300"
+          className="btn-ghost !text-[11.5px]"
         >
-          collapse all
+          Collapse all
         </button>
       </div>
 

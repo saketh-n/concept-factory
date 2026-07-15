@@ -10,27 +10,26 @@ html,
 body,
 #root {
   min-height: 100%;
-  background: #0c1a3a;
-  color: #d7dbe2;
+  background: #0a0e17;
+  color: #cbd2dd;
   font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Soft dusk shell — sits behind the bright island stage */
-.game-shell {
-  background:
-    radial-gradient(ellipse 70% 45% at 20% 0%, rgba(120, 180, 220, 0.18), transparent 55%),
-    radial-gradient(ellipse 50% 35% at 90% 10%, rgba(255, 200, 120, 0.1), transparent 50%),
-    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(60, 120, 70, 0.12), transparent 50%),
-    linear-gradient(180deg, #0e1a2e 0%, #0c1420 45%, #0c1814 100%);
+/* Page canvas: near-black slate with a faint aurora wash up top. */
+.app-shell {
   min-height: 100vh;
+  background:
+    radial-gradient(ellipse 60% 40% at 15% -5%, rgba(52, 211, 153, 0.07), transparent 60%),
+    radial-gradient(ellipse 55% 38% at 85% -8%, rgba(167, 139, 250, 0.06), transparent 55%),
+    linear-gradient(180deg, #0b101c 0%, #0a0e17 40%, #0a0e17 100%);
 }
 
 ::selection {
-  background: rgba(167, 139, 250, 0.28); /* violet-300 */
+  background: rgba(52, 211, 153, 0.25);
 }
 
-/* Quiet scrollbars that match the canvas. */
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
@@ -47,9 +46,8 @@ body,
   background: transparent;
 }
 
-/* One consistent focus treatment everywhere. */
 :focus-visible {
-  outline: 2px solid rgba(167, 139, 250, 0.6);
+  outline: 2px solid rgba(52, 211, 153, 0.55);
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -63,7 +61,69 @@ body,
   }
 }
 
-/* Consolidation: source cards collapse away as they merge into the new card. */
+/* ─────────────────────────────────────────────────────────────
+   Component primitives — one visual language everywhere
+   ───────────────────────────────────────────────────────────── */
+@layer components {
+  /* Primary CTA — solid brand, crisp. */
+  .btn-primary {
+    @apply inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-brand px-3.5 py-1.5 text-[13px] font-semibold text-[#052e1b] transition;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.25),
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 0 0 1px rgba(52, 211, 153, 0.25);
+  }
+  .btn-primary:hover {
+    background: #4ade95;
+  }
+  .btn-primary:active {
+    transform: translateY(1px);
+  }
+  .btn-primary:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+
+  /* Secondary — bordered surface button. */
+  .btn-secondary {
+    @apply inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-1.5 text-[13px] font-medium text-slate-200 transition hover:border-white/20 hover:bg-white/[0.07];
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+  .btn-secondary:active {
+    transform: translateY(1px);
+  }
+  .btn-secondary:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+
+  /* Ghost — quiet text action. */
+  .btn-ghost {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12.5px] font-medium text-slate-400 transition hover:bg-white/[0.05] hover:text-slate-200;
+  }
+
+  /* Inputs. */
+  .field {
+    @apply rounded-lg border border-white/10 bg-well px-3 py-2 text-sm text-slate-200 outline-none transition-colors placeholder:text-slate-600;
+  }
+  .field:focus {
+    border-color: rgba(52, 211, 153, 0.45);
+    box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.1);
+  }
+
+  /* Status badge base. */
+  .badge {
+    @apply inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-[3px] text-[11px] font-semibold leading-none tracking-tight ring-1 ring-inset;
+  }
+
+  /* Keycap hint. */
+  .kbd {
+    @apply inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-white/15 bg-white/[0.07] px-1 font-mono text-[10px] font-semibold text-slate-300;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 1.5px 0 rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Consolidation choreography
+   ───────────────────────────────────────────────────────────── */
 @keyframes merge-out {
   0% {
     opacity: 1;
@@ -87,7 +147,6 @@ body,
   overflow: hidden;
 }
 
-/* The freshly-minted consolidated card rises in with a brief violet halo. */
 @keyframes merge-in {
   0% {
     opacity: 0;
@@ -108,7 +167,9 @@ body,
   animation: merge-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* Rendered plan markdown (dark read view). */
+/* ─────────────────────────────────────────────────────────────
+   Rendered plan markdown
+   ───────────────────────────────────────────────────────────── */
 .plan-prose {
   color: #b6bcc8;
   font-size: 0.925rem;
@@ -159,7 +220,7 @@ body,
   font-weight: 600;
 }
 .plan-prose a {
-  color: #c4b5fd;
+  color: #6ee7b7;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -170,10 +231,10 @@ body,
   padding: 0.1rem 0.35rem;
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 0.82em;
-  color: #c4b5fd;
+  color: #6ee7b7;
 }
 .plan-prose pre {
-  background: #0e1117;
+  background: #0c1017;
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: #d7dbe2;
   border-radius: 0.6rem;
@@ -208,200 +269,67 @@ body,
   background: rgba(255, 255, 255, 0.03);
 }
 
-
 /* ─────────────────────────────────────────────────────────────
-   Animal Crossing–style 3D overworld (Three.js)
+   Cards ↔ Map segmented control
    ───────────────────────────────────────────────────────────── */
-
-.ac-stage {
+.view-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  padding: 3px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.view-toggle button {
   position: relative;
-  width: 100%;
-  max-width: 960px;
-  margin: 0 auto;
-  height: min(62vh, 560px);
-  min-height: 420px;
-  border-radius: 18px;
-  overflow: hidden;
-  border: 3px solid rgba(255, 255, 255, 0.12);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.35),
-    0 16px 40px rgba(0, 0, 0, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  background: #b8dcf0;
-}
-
-.ac-stage canvas {
-  display: block;
-  width: 100% !important;
-  height: 100% !important;
-  touch-action: none;
-}
-
-.ac-hud-title {
-  font-family: "Space Grotesk", Inter, sans-serif;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: #f4f7e8;
-  letter-spacing: 0.01em;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-}
-
-.ac-hud-crumb {
-  font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.45);
-}
-
-.ac-btn {
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(0, 0, 0, 0.28);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   padding: 0.3rem 0.75rem;
-  font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.85);
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.ac-btn:hover {
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-}
-
-.ac-corner-hud {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: rgba(255, 255, 255, 0.78);
-  backdrop-filter: blur(8px);
-  border-radius: 12px;
-  padding: 6px 12px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-  pointer-events: none;
-  border: 1px solid rgba(255, 255, 255, 0.6);
-}
-.ac-corner-world {
-  font-family: "Space Grotesk", sans-serif;
-  font-weight: 700;
-  font-size: 0.8rem;
-  color: #3d6b2e;
-}
-.ac-corner-count {
-  font-size: 0.7rem;
-  color: #5a6a50;
-}
-
-.ac-empty {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  background: rgba(180, 210, 160, 0.35);
-  backdrop-filter: blur(2px);
-  pointer-events: none;
-  font-family: "Space Grotesk", sans-serif;
-  color: #2a4020;
-  font-size: 0.95rem;
-  line-height: 1.5;
-}
-.ac-empty span {
-  color: #4a7040;
-  font-size: 0.8rem;
-}
-
-/* Floating labels over 3D landmarks */
-.ac-label {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  white-space: nowrap;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.25));
-}
-.ac-label-title {
-  font-family: "Space Grotesk", Inter, sans-serif;
   font-size: 12px;
   font-weight: 600;
-  color: #fffef8;
-  background: rgba(40, 55, 30, 0.55);
-  backdrop-filter: blur(4px);
-  padding: 3px 10px;
+  letter-spacing: 0.01em;
+  color: rgba(203, 210, 221, 0.55);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.view-toggle button:hover {
+  color: rgba(226, 232, 240, 0.9);
+}
+.view-toggle button.is-active {
+  color: #f4f6f9;
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    0 1px 3px rgba(0, 0, 0, 0.4);
+}
+.view-toggle-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 4px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ac-label-meta {
-  font-size: 10px;
-  font-weight: 600;
-  color: #f0d878;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-}
-.ac-label-hint {
-  margin-top: 2px;
-  font-size: 10px;
+  background: rgba(52, 211, 153, 0.18);
+  color: #6ee7b7;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #2a2010;
-  background: linear-gradient(180deg, #ffe566, #f0c020);
-  padding: 2px 8px;
-  border-radius: 6px;
-  border: 1.5px solid #3a2a10;
-  box-shadow: 0 2px 0 #3a2a10;
-  animation: ac-hint-bob 0.7s ease-in-out infinite alternate;
+  line-height: 1;
 }
-@keyframes ac-hint-bob {
-  from { transform: translateY(0); }
-  to { transform: translateY(-3px); }
+.view-toggle button.is-active .view-toggle-badge {
+  background: rgba(52, 211, 153, 0.25);
+  color: #a7f3d0;
 }
 
-/* Soft green/red minibar — village notice board vibe */
-.ac-minibar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 45%),
-    linear-gradient(135deg, #5a9a48 0%, #3f7a38 50%, #356832 100%);
-  border: 3px solid #2a4a22;
-  border-radius: 14px;
-  padding: 12px 16px;
-  box-shadow:
-    0 5px 0 #1a3018,
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
-}
-.ac-minibar-title {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.ac-minibar-name {
-  font-family: "Space Grotesk", sans-serif;
-  font-weight: 700;
-  font-size: 1rem;
-  color: #f4ffe8;
-  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
-}
-.ac-minibar-hint {
-  font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.7);
-}
-.ac-minimap {
-  background: #8fbf6a;
-  border: 3px solid #2a4a22;
-  border-radius: 10px;
-  padding: 3px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    0 2px 0 rgba(0, 0, 0, 0.15);
-  overflow: hidden;
+/* Workbench tray (map view plan-mode cards) */
+.workbench {
+  scroll-margin-top: 5rem;
 }
 
 .level-panel {
@@ -419,63 +347,270 @@ body,
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Cards ↔ Map view toggle
+   3D overworld stage & game HUD
    ───────────────────────────────────────────────────────────── */
-
-.view-toggle {
-  display: inline-flex;
-  align-items: stretch;
-  padding: 2px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(0, 0, 0, 0.35);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-}
-.view-toggle button {
+.ac-stage {
   position: relative;
+  width: 100%;
+  height: min(68vh, 640px);
+  min-height: 440px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 24px 60px -18px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  background: #7fb2d9;
+}
+
+.ac-stage canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  touch-action: none;
+}
+
+/* Cinematic frame: subtle inner vignette above the canvas. */
+.ac-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  border-radius: inherit;
+  box-shadow: inset 0 0 90px rgba(10, 20, 35, 0.35);
+}
+
+/* Location plate — top left, game style. */
+.hud-plate {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px 9px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(14, 20, 32, 0.82), rgba(10, 15, 24, 0.78));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  max-width: min(60%, 420px);
+}
+.hud-plate-eyebrow {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(110, 231, 183, 0.85);
+}
+.hud-plate-title {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f4f7fb;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hud-plate-sub {
+  font-size: 10.5px;
+  color: rgba(203, 213, 225, 0.65);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Progress chip — top right. */
+.hud-progress {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(14, 20, 32, 0.82), rgba(10, 15, 24, 0.78));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+.hud-progress-bar {
+  width: 64px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.hud-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #34d399, #6ee7b7);
+  transition: width 0.5s ease;
+}
+
+/* Control hints — bottom left keycaps. */
+.hud-keys {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(14, 20, 32, 0.78), rgba(10, 15, 24, 0.72));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+.hud-key-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: rgba(203, 213, 225, 0.75);
+}
+
+/* Minimap — bottom right, inside the stage. */
+.hud-minimap {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(10, 15, 24, 0.65);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+}
+.hud-minimap svg {
+  display: block;
+}
+
+/* Back button — floats top-center-left inside stage when inside a world. */
+.hud-back {
+  position: absolute;
+  left: 14px;
+  top: 74px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(14, 20, 32, 0.8);
+  backdrop-filter: blur(8px);
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.hud-back:hover {
+  background: rgba(30, 41, 59, 0.9);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.ac-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: rgba(12, 18, 28, 0.45);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+  font-family: "Space Grotesk", sans-serif;
+  color: #e2e8f0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+.ac-empty span {
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
+/* Floating labels over 3D landmarks */
+.ac-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.35));
+}
+.ac-label-title {
+  font-family: "Space Grotesk", Inter, sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f8fafc;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.85), rgba(10, 15, 26, 0.82));
+  backdrop-filter: blur(6px);
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+.ac-label-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  color: #0f172a;
+  background: linear-gradient(180deg, #fde68a, #f5c842);
+  border: 1px solid rgba(120, 80, 10, 0.45);
+  padding: 1.5px 8px;
+  border-radius: 999px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+}
+.ac-label-hint {
+  margin-top: 2px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  padding: 0.28rem 0.7rem;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: rgba(226, 232, 240, 0.55);
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-}
-.view-toggle button:hover {
-  color: rgba(226, 232, 240, 0.9);
-}
-.view-toggle button.is-active {
-  color: #0e1a14;
-  background: linear-gradient(180deg, #b8e89a, #5dcf7a);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
-}
-.view-toggle-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.1rem;
-  height: 1.1rem;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: rgba(248, 216, 120, 0.25);
-  color: #f8d878;
-  font-family: ui-monospace, "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 700;
-  line-height: 1;
+  letter-spacing: 0.03em;
+  color: #052e1b;
+  background: linear-gradient(180deg, #6ee7b7, #34d399);
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(5, 46, 27, 0.5);
+  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.4);
+  animation: ac-hint-bob 0.8s ease-in-out infinite alternate;
 }
-.view-toggle button.is-active .view-toggle-badge {
-  background: rgba(14, 26, 20, 0.18);
-  color: #0e1a14;
-}
-
-/* Workbench tray (map view plan-mode cards) */
-.workbench {
-  scroll-margin-top: 5rem;
+@keyframes ac-hint-bob {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-3px);
+  }
 }

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { Topic } from "../api";
+import { IconChevronRight, IconClipboard } from "./icons";
 
 /**
  * Always-visible tray of plan-mode cards while you're on the 3D map.
@@ -25,18 +26,18 @@ export function isPlanMode(status: Topic["planStatus"]): boolean {
 const STATUS_CHIP: Partial<
   Record<Topic["planStatus"], { label: string; cls: string }>
 > = {
-  none: { label: "no plan", cls: "bg-white/10 text-slate-300" },
-  queued: { label: "queued", cls: "bg-slate-400/15 text-slate-300" },
+  none: { label: "no plan", cls: "bg-white/[0.06] text-slate-300 ring-white/10" },
+  queued: { label: "queued", cls: "bg-slate-400/10 text-slate-300 ring-slate-400/25" },
   planning: {
     label: "planning",
-    cls: "bg-violet-400/15 text-violet-200 animate-pulse",
+    cls: "bg-violet-400/10 text-violet-300 ring-violet-400/30 animate-pulse",
   },
-  ready: { label: "plan ready", cls: "bg-emerald-400/15 text-emerald-200" },
+  ready: { label: "plan ready", cls: "bg-sky-400/10 text-sky-300 ring-sky-400/30" },
   building: {
     label: "building",
-    cls: "bg-amber-400/15 text-amber-200 animate-pulse",
+    cls: "bg-amber-400/10 text-amber-300 ring-amber-400/30 animate-pulse",
   },
-  error: { label: "error", cls: "bg-rose-400/15 text-rose-200" },
+  error: { label: "error", cls: "bg-rose-400/10 text-rose-300 ring-rose-400/30" },
 };
 
 export default function Workbench({
@@ -67,60 +68,57 @@ export default function Workbench({
 
   return (
     <section
-      className="workbench mt-6 overflow-hidden rounded-xl border border-[#f8d878]/20 bg-black/30 shadow-[0_8px_28px_rgba(0,0,0,0.35)]"
+      className="workbench mt-5 overflow-hidden rounded-xl border border-white/[0.08] bg-panel shadow-card"
       aria-label="Workbench — cards still in plan mode"
     >
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center gap-3 border-b border-white/[0.06] bg-gradient-to-r from-[#2a2418]/90 to-[#1a1e28]/90 px-4 py-3 text-left transition hover:from-[#322c1c] hover:to-[#1e2430]"
+        className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.02]"
       >
         <span
-          className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#f8d878]/15 text-sm ${
+          className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-sky-400/10 text-sky-300 ${
             live ? "animate-pulse" : ""
           }`}
           aria-hidden
         >
-          ✎
+          <IconClipboard size={13} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="font-display text-sm font-semibold tracking-tight text-[#f4ecd0]">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="font-display text-[13.5px] font-semibold tracking-tight text-slate-100">
               Workbench
             </span>
-            <span className="font-mono text-[11px] text-slate-500">
-              {topics.length} in plan mode
-              {live ? " · agent live" : ""}
+            <span className="text-[11.5px] text-slate-500">
+              {topics.length} in plan mode{live ? " · agent live" : ""}
+            </span>
+            <span className="flex flex-wrap gap-1.5">
+              {chips.map((c) => (
+                <span key={c.status} className={`badge ${c.cls}`}>
+                  {c.n} {c.label}
+                </span>
+              ))}
             </span>
           </div>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {chips.map((c) => (
-              <span
-                key={c.status}
-                className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide ${c.cls}`}
-              >
-                {c.n} {c.label}
-              </span>
-            ))}
-          </div>
         </div>
-        <span className="shrink-0 font-mono text-[11px] text-slate-500">
-          {open ? "hide ▾" : "show ▸"}
+        <span
+          className={`shrink-0 text-slate-500 transition-transform ${
+            open ? "rotate-90" : ""
+          }`}
+          aria-hidden
+        >
+          <IconChevronRight size={14} />
         </span>
       </button>
 
       {open && (
-        <div className="max-h-[min(52vh,520px)] space-y-2 overflow-y-auto p-3">
-          <p className="mb-2 px-1 font-mono text-[10.5px] leading-relaxed text-slate-500">
-            Cards that aren&apos;t built yet stay here so you can edit, plan, and
-            approve without walking the map. Built concepts live on the island.
-          </p>
+        <div className="max-h-[min(52vh,520px)] space-y-2 overflow-y-auto border-t border-white/[0.06] p-3">
           {topics.map((t) => (
             <div
               key={t.id}
               className={
                 highlightIds?.has(t.id)
-                  ? "rounded-xl ring-2 ring-[#f8d878]/50 ring-offset-2 ring-offset-[#0c1420] transition"
+                  ? "rounded-xl ring-2 ring-emerald-400/50 ring-offset-2 ring-offset-[#0a0e17] transition"
                   : undefined
               }
             >

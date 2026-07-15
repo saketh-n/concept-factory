@@ -6,6 +6,17 @@ import GroupTree from "./components/GroupTree";
 import PlanModal from "./components/PlanModal";
 import Workbench, { isPlanMode } from "./components/Workbench";
 import CreditsHud from "./components/CreditsHud";
+import {
+  IconMap,
+  IconMerge,
+  IconPlus,
+  IconRows,
+  IconSearch,
+  IconSparkles,
+  IconTrash,
+  IconX,
+  LogoMark,
+} from "./components/icons";
 
 const BUSY: Topic["planStatus"][] = ["queued", "planning", "building"];
 
@@ -36,10 +47,10 @@ function loadWorkbenchOpen(): boolean {
 
 /** Pipeline order + colors for the fleet summary strip. */
 const PIPELINE: { status: Topic["planStatus"]; label: string; dot: string }[] = [
-  { status: "none", label: "no plan", dot: "bg-white/25" },
+  { status: "none", label: "no plan", dot: "bg-slate-500" },
   { status: "queued", label: "queued", dot: "bg-slate-400" },
   { status: "planning", label: "planning", dot: "bg-violet-400" },
-  { status: "ready", label: "plan ready", dot: "bg-emerald-400/70" },
+  { status: "ready", label: "plan ready", dot: "bg-sky-400" },
   { status: "building", label: "building", dot: "bg-amber-400" },
   { status: "built", label: "built", dot: "bg-emerald-400" },
   { status: "error", label: "error", dot: "bg-rose-400" },
@@ -265,108 +276,135 @@ export default function App() {
   );
 
   return (
-    <div className="min-h-screen game-shell">
-      {/* Top bar: credits · wordmark · meta prompt · actions */}
-      <header className="sticky top-0 z-10 border-b border-white/10 bg-[#0e1a2e]/90 shadow-[0_4px_24px_rgba(0,0,0,0.3)] backdrop-blur-md">
-        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2.5 sm:gap-4 sm:px-6">
-          <CreditsHud variant="header" />
-
-          <span className="hidden shrink-0 select-none font-display text-[0.95rem] font-semibold leading-none tracking-tight text-[#e8f5d8] md:inline">
-            <span className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-[#5DCF7A] shadow-[0_0_0_3px_rgba(93,207,122,0.25)]" aria-hidden />
-            Concept<span className="text-[#8FBF6A]">Factory</span>
-          </span>
-
-          <input
-            className="min-w-0 flex-1 rounded-full border border-white/10 bg-black/25 px-4 py-2 text-[0.83rem] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:border-[#8FBF6A]/50"
-            placeholder="Meta prompt — guidance the agent applies to every topic…"
-            title="Applied to every topic when planning and building"
-            value={metaPrompt}
-            onChange={(e) => setMetaPrompt(e.target.value)}
-            onBlur={() => api.setMetaPrompt(metaPrompt)}
-          />
-
-          <button
-            onClick={consolidate}
-            disabled={selected.size < 2 || consolidating}
-            title={
-              selected.size < 2
-                ? "Tick the checkboxes on two or more plan-ready cards to merge them"
-                : `Merge the ${selected.size} selected plans into one`
-            }
-            className="shrink-0 rounded-full border border-white/15 bg-white/[0.06] px-3.5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/[0.1] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 enabled:border-[#B07AE0]/45 enabled:bg-[#B07AE0]/15 enabled:text-[#e0b0ff]"
+    <div className="app-shell min-h-screen">
+      {/* App bar: brand · studio direction · actions · credits */}
+      <header className="sticky top-0 z-10 border-b border-white/[0.07] bg-[#0b101c]/85 backdrop-blur-xl">
+        <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:gap-4 sm:px-6">
+          <a
+            href="/"
+            className="flex shrink-0 select-none items-center gap-2.5"
+            title="Concept Factory"
           >
-            {consolidating
-              ? "Merging…"
-              : `Merge${selected.size >= 2 ? ` ×${selected.size}` : ""}`}
-          </button>
+            <LogoMark size={24} />
+            <span className="hidden font-display text-[15px] font-semibold leading-none tracking-tight text-slate-50 md:inline">
+              Concept Factory
+            </span>
+          </a>
 
-          <button
-            onClick={generatePlans}
-            className="shrink-0 rounded-full bg-[#5DCF7A] px-4 py-1.5 text-xs font-semibold text-[#0e1a14] shadow-[0_3px_0_#3a9a55] transition hover:brightness-105 active:translate-y-px active:shadow-none"
-          >
-            Generate plans
-          </button>
+          <div className="relative min-w-0 flex-1 md:mx-4 md:max-w-2xl">
+            <span
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"
+              aria-hidden
+            >
+              <IconSparkles size={13} />
+            </span>
+            <input
+              className="field w-full rounded-full py-1.5 pr-4 text-[13px]"
+              style={{ paddingLeft: "2.1rem" }}
+              placeholder="Meta prompt — guidance the agent applies to every topic…"
+              title="Applied to every topic when planning and building"
+              value={metaPrompt}
+              onChange={(e) => setMetaPrompt(e.target.value)}
+              onBlur={() => api.setMetaPrompt(metaPrompt)}
+            />
+          </div>
+
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <button
+              onClick={consolidate}
+              disabled={selected.size < 2 || consolidating}
+              title={
+                selected.size < 2
+                  ? "Tick the checkboxes on two or more plan-ready cards to merge them"
+                  : `Merge the ${selected.size} selected plans into one`
+              }
+              className={`btn-secondary ${
+                selected.size >= 2
+                  ? "!border-violet-400/40 !bg-violet-400/10 !text-violet-200"
+                  : ""
+              }`}
+            >
+              <IconMerge size={13} />
+              {consolidating
+                ? "Merging…"
+                : `Merge${selected.size >= 2 ? ` ${selected.size}` : ""}`}
+            </button>
+
+            <button onClick={generatePlans} className="btn-primary">
+              <IconSparkles size={13} />
+              Generate plans
+            </button>
+
+            <CreditsHud variant="header" />
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-6 pb-24 pt-8">
-        {/* Fleet summary: the pipeline at a glance */}
+      <main className="mx-auto max-w-6xl px-4 pb-24 pt-6 sm:px-6">
+        {/* Toolbar: view switch · pipeline census · search · library actions */}
         {!loading && topics.length > 0 && (
-          <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2">
-            {counts.map((p) => (
-              <span
-                key={p.status}
-                className="flex items-center gap-1.5 text-[11px] font-medium text-slate-300"
+          <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-3">
+            <div className="view-toggle" role="group" aria-label="Board view">
+              <button
+                type="button"
+                onClick={() => setView("map")}
+                aria-pressed={view === "map"}
+                className={view === "map" ? "is-active" : ""}
+                title="3D overworld map"
               >
-                <span
-                  className={`h-2 w-2 rounded-sm ${p.dot} ${
-                    (p.status === "planning" || p.status === "building") && anyBusy
-                      ? "animate-pulse"
-                      : ""
-                  }`}
-                />
-                {p.n} {p.label}
-              </span>
-            ))}
-            <span className="ml-auto flex items-center gap-3 sm:gap-4">
-              {/* Cards ↔ Map view toggle */}
-              <div
-                className="view-toggle"
-                role="group"
-                aria-label="Board view"
+                <IconMap size={13} />
+                Map
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("cards")}
+                aria-pressed={view === "cards"}
+                className={view === "cards" ? "is-active" : ""}
+                title="Card list with group tree"
               >
-                <button
-                  type="button"
-                  onClick={() => setView("cards")}
-                  aria-pressed={view === "cards"}
-                  className={view === "cards" ? "is-active" : ""}
-                  title="Card list with group tree"
-                >
-                  Cards
-                  {workbenchTopics.length > 0 && view !== "cards" ? (
-                    <span className="view-toggle-badge">{workbenchTopics.length}</span>
-                  ) : null}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setView("map")}
-                  aria-pressed={view === "map"}
-                  className={view === "map" ? "is-active" : ""}
-                  title="3D overworld map"
-                >
-                  Map
-                </button>
-              </div>
+                <IconRows size={13} />
+                Cards
+                {workbenchTopics.length > 0 && view !== "cards" ? (
+                  <span className="view-toggle-badge">
+                    {workbenchTopics.length}
+                  </span>
+                ) : null}
+              </button>
+            </div>
 
+            <div
+              className="flex flex-wrap items-center gap-x-4 gap-y-1.5"
+              aria-label="Pipeline summary"
+            >
+              {counts.map((p) => (
+                <span
+                  key={p.status}
+                  className="flex items-center gap-1.5 text-[12px] font-medium text-slate-400"
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${p.dot} ${
+                      (p.status === "planning" || p.status === "building") &&
+                      anyBusy
+                        ? "animate-pulse"
+                        : ""
+                    }`}
+                  />
+                  <span className="tabular-nums text-slate-200">{p.n}</span>
+                  {p.label}
+                </span>
+              ))}
+            </div>
+
+            <span className="ml-auto flex items-center gap-2">
               <span className="relative flex items-center">
                 <span
-                  className="pointer-events-none absolute left-2.5 text-slate-600"
+                  className="pointer-events-none absolute left-2.5 text-slate-500"
                   aria-hidden
                 >
-                  ⌕
+                  <IconSearch size={13} />
                 </span>
                 <input
-                  className="w-40 rounded border-2 border-white/10 bg-black/30 py-1 pl-7 pr-7 font-mono text-[11.5px] text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:w-52 focus:border-[#f8d878]/40 sm:w-44"
+                  className="field w-44 py-1.5 pl-8 pr-7 text-[12.5px] transition-all focus:w-56 sm:w-48"
                   placeholder={view === "map" ? "Search worlds…" : "Search cards…"}
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -378,38 +416,48 @@ export default function App() {
                   <button
                     onClick={() => setSearch("")}
                     title="Clear search"
-                    className="absolute right-2.5 text-slate-500 transition-colors hover:text-slate-300"
+                    className="absolute right-2 text-slate-500 transition-colors hover:text-slate-300"
                   >
-                    ✕
+                    <IconX size={12} />
                   </button>
                 )}
               </span>
+
               <button
                 onClick={() => setIntakeOpen((o) => !o)}
-                className="text-[11px] font-medium text-[#8FBF6A] transition-colors hover:text-[#b0d890]"
+                className={`btn-secondary ${intakeOpen ? "!border-emerald-400/40 !bg-emerald-400/10 !text-emerald-200" : ""}`}
               >
-                + Add topics
+                <IconPlus size={13} />
+                Add topics
               </button>
+
               <button
                 onClick={clearAll}
-                className="text-[11px] font-medium text-slate-500 transition-colors hover:text-rose-300"
+                className="btn-ghost !px-2 text-slate-500 hover:!bg-rose-400/10 hover:!text-rose-300"
+                title="Delete every card"
               >
-                Clear all
+                <IconTrash size={13} />
               </button>
             </span>
           </div>
         )}
 
-        {/* Intake: paste topics (terminal-flavored, collapsible once the
-            board is populated) */}
-        {(intakeOpen || topics.length === 0) && (
-          <div className="mb-8 overflow-hidden rounded-xl border-2 border-white/10 bg-black/25">
-            <div className="flex items-center justify-between border-b border-white/[0.06] bg-[#1a1a2e]/80 px-4 py-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-[#8FBF6A]">
-                Paste topics · one per line
+        {/* Intake: paste topics (collapsible once the board is populated) */}
+        {(intakeOpen || (!loading && topics.length === 0)) && (
+          <div className="mb-8 overflow-hidden rounded-xl border border-white/[0.08] bg-panel shadow-card">
+            <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-2.5">
+              <span className="flex items-center gap-2 text-[12px] font-semibold text-slate-200">
+                <span className="grid h-5 w-5 place-items-center rounded-md bg-emerald-400/15 text-emerald-300">
+                  <IconPlus size={11} />
+                </span>
+                Add topics
+                <span className="font-normal text-slate-500">
+                  · one per line
+                </span>
               </span>
               <span className="font-mono text-[11px] text-slate-600">
-                World &gt; Course &gt; Level | notes
+                World &gt; Course &gt; Level&nbsp;
+                <span className="text-slate-700">|</span>&nbsp;notes
               </span>
             </div>
             <textarea
@@ -423,16 +471,24 @@ export default function App() {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) addTopics();
               }}
             />
-            <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-2.5">
-              <span className="font-mono text-[11px] text-slate-600">
-                {pendingCount > 0
-                  ? `${pendingCount} topic${pendingCount === 1 ? "" : "s"} · ⌘↵ to add`
-                  : "deterministic split — no tokens spent"}
+            <div className="flex items-center justify-between border-t border-white/[0.06] bg-white/[0.015] px-4 py-2.5">
+              <span className="flex items-center gap-2 text-[11.5px] text-slate-500">
+                {pendingCount > 0 ? (
+                  <>
+                    {pendingCount} topic{pendingCount === 1 ? "" : "s"} ready
+                    <span className="flex items-center gap-1">
+                      <span className="kbd">⌘</span>
+                      <span className="kbd">↵</span>
+                    </span>
+                  </>
+                ) : (
+                  "Deterministic split — no tokens spent"
+                )}
               </span>
               <button
                 onClick={addTopics}
                 disabled={pendingCount === 0}
-                className="rounded-full bg-[#5DCF7A] px-4 py-1.5 text-xs font-semibold text-[#0e1a14] shadow-[0_3px_0_#3a9a55] transition hover:brightness-105 active:translate-y-px active:shadow-none disabled:cursor-not-allowed disabled:opacity-40"
+                className="btn-primary"
               >
                 Add {pendingCount > 0 ? pendingCount : ""} card
                 {pendingCount === 1 ? "" : "s"}
@@ -444,26 +500,39 @@ export default function App() {
         {/* Board: card tree or 3D overworld (+ workbench for plan-mode cards) */}
         <div id="board-anchor">
           {loading ? (
-            <p className="text-sm text-slate-500">Loading…</p>
+            <div className="space-y-3" aria-label="Loading">
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="h-20 animate-pulse rounded-xl border border-white/[0.05] bg-white/[0.03]"
+                  style={{ animationDelay: `${i * 150}ms` }}
+                />
+              ))}
+            </div>
           ) : topics.length === 0 ? (
-            <p className="text-sm text-slate-500">
-              No topics yet. Paste a list above — each line becomes a card
-              {view === "map" ? " and a level on the map" : ""}.
-            </p>
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-white/10 px-6 py-14 text-center">
+              <LogoMark size={34} />
+              <p className="mt-2 font-display text-[15px] font-semibold text-slate-200">
+                Start your library
+              </p>
+              <p className="max-w-sm text-[13px] leading-relaxed text-slate-500">
+                Paste a list of topics above — each line becomes a card
+                {view === "map" ? " and a stop on the map" : ""}, and the agent
+                plans and builds an interactive concept for each one.
+              </p>
+            </div>
           ) : filteredTopics.length === 0 ? (
-            <p className="text-sm text-slate-500">
-              No {view === "map" ? "worlds" : "cards"} match{" "}
-              <span className="font-mono text-slate-400">
-                “{search.trim()}”
-              </span>
-              .{" "}
-              <button
-                onClick={() => setSearch("")}
-                className="text-[#5c94fc] underline-offset-2 hover:underline"
-              >
+            <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-white/10 px-6 py-12 text-center">
+              <p className="text-sm text-slate-400">
+                No {view === "map" ? "worlds" : "cards"} match{" "}
+                <span className="font-mono text-slate-200">
+                  “{search.trim()}”
+                </span>
+              </p>
+              <button onClick={() => setSearch("")} className="btn-secondary">
                 Clear search
               </button>
-            </p>
+            </div>
           ) : view === "cards" ? (
             <GroupTree topics={filteredTopics} renderCard={renderCard} />
           ) : (
@@ -488,7 +557,6 @@ export default function App() {
           onClose={() => setOpenPlanId(null)}
         />
       )}
-
     </div>
   );
 }

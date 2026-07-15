@@ -32,7 +32,7 @@ export interface Edge {
 /** World extents (XZ ground plane). */
 export const WORLD_W = 28;
 export const WORLD_D = 20;
-export const ENTER_DIST = 1.7;
+export const ENTER_DIST = 2.3;
 export const MOVE_SPEED = 5.0;
 
 export function hash01(s: string): number {

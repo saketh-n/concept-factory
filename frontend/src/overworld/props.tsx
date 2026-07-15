@@ -1,47 +1,50 @@
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { hash01 } from "./layout";
+import { hash01, WORLD_W, WORLD_D } from "./layout";
 
-/* ── Animal Crossing palette ───────────────────────────────────────── */
+/* ── Palette — warm, saturated, game-grade ─────────────────────────── */
 export const AC = {
-  grass: "#8FBF6A",
-  grassDark: "#6FA04E",
-  grassLight: "#A8D47C",
-  dirt: "#C9A882",
-  dirtPath: "#C4A06A",
-  dirtEdge: "#A8844E",
-  dirtLight: "#D8BC8A",
-  canopyDeep: "#2F8F3A",
-  canopyMid: "#45B04A",
-  canopyLite: "#6AD05A",
-  canopyTip: "#8AE06A",
-  trunk: "#6B4423",
-  trunkDark: "#4A2E16",
-  log: "#C9A882",
-  logDark: "#A8885E",
-  logLite: "#E0C8A0",
-  roof: "#3D7A5C",
-  roofDark: "#2A5A42",
-  roofLite: "#4F9A72",
-  windowGlow: "#FFE6A8",
-  windowFrame: "#8B6914",
-  door: "#7A4A28",
-  doorDark: "#5A3218",
-  mailbox: "#E07040",
-  sky: "#B8DCF0",
-  fog: "#C5E0B0",
-  playerBody: "#3D5FBF",
-  playerDark: "#2A4490",
-  playerFeet: "#E05050",
-  playerFace: "#F5C8A0",
-  flowerY: "#F5E050",
-  flowerP: "#F090B8",
-  flowerB: "#90B8F0",
-  stone: "#B0A898",
+  grass: "#7db95c",
+  grassDark: "#639a48",
+  grassLight: "#94cc70",
+  cliff: "#8a6a48",
+  cliffDark: "#6e5238",
+  sand: "#e8d5a4",
+  ocean: "#3d87c4",
+  oceanDeep: "#2e6ea6",
+  foam: "#eaf6ff",
+  dirtPath: "#c9a26e",
+  dirtEdge: "#a67f4e",
+  canopyDeep: "#2e7f3c",
+  canopyMid: "#43a04a",
+  canopyLite: "#63c05e",
+  canopyTip: "#85d878",
+  trunk: "#6b4423",
+  log: "#c8a076",
+  logDark: "#a5805a",
+  logLite: "#e0c8a0",
+  roof: "#3d7a5c",
+  roofDark: "#2a5a42",
+  roofLite: "#4f9a72",
+  windowGlow: "#ffd98a",
+  windowFrame: "#7a5c1e",
+  door: "#7a4a28",
+  mailbox: "#e07040",
+  sky: "#8ec4e8",
+  fog: "#b9dcf0",
+  playerBody: "#3d5fbf",
+  playerDark: "#2a4490",
+  playerFeet: "#e05050",
+  playerFace: "#f5c8a0",
+  flowerY: "#f7e05a",
+  flowerP: "#f090b8",
+  flowerB: "#8fb8f0",
+  flowerR: "#ef6a5a",
+  stone: "#a8a294",
 } as const;
 
-/** Soft matte material helper — AC surfaces are matte, slightly toon. */
+/** Soft matte material helper — surfaces are matte, slightly toon. */
 function mat(color: string, opts?: { roughness?: number; metalness?: number }) {
   return (
     <meshStandardMaterial
@@ -52,7 +55,353 @@ function mat(color: string, opts?: { roughness?: number; metalness?: number }) {
   );
 }
 
-/* ── Pine tree (stacked soft cones — dense forest look) ─────────────── */
+/* ── Shared geometry helpers ───────────────────────────────────────── */
+function roundedRectShape(w: number, h: number, r: number) {
+  const s = new THREE.Shape();
+  const x = -w / 2;
+  const y = -h / 2;
+  s.moveTo(x, y + r);
+  s.lineTo(x, y + h - r);
+  s.quadraticCurveTo(x, y + h, x + r, y + h);
+  s.lineTo(x + w - r, y + h);
+  s.quadraticCurveTo(x + w, y + h, x + w, y + h - r);
+  s.lineTo(x + w, y + r);
+  s.quadraticCurveTo(x + w, y, x + w - r, y);
+  s.lineTo(x + r, y);
+  s.quadraticCurveTo(x, y, x, y + r);
+  return s;
+}
+
+/** Island footprint (grass plateau) half-extents beyond the play area. */
+export const ISLAND_MARGIN = 4.2;
+const ISL_W = WORLD_W + ISLAND_MARGIN * 2;
+const ISL_D = WORLD_D + ISLAND_MARGIN * 2;
+const ISL_R = 7;
+const SEA_Y = -1.42;
+
+/* ── Sky dome — vertical gradient, sits behind everything ──────────── */
+export function SkyDome() {
+  const material = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      uniforms: {
+        top: { value: new THREE.Color("#5ea7dd") },
+        horizon: { value: new THREE.Color("#cfe9f7") },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vPos;
+        void main() {
+          vPos = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 top;
+        uniform vec3 horizon;
+        varying vec3 vPos;
+        void main() {
+          float h = clamp(normalize(vPos).y * 1.6 + 0.18, 0.0, 1.0);
+          gl_FragColor = vec4(mix(horizon, top, pow(h, 0.8)), 1.0);
+        }
+      `,
+    });
+  }, []);
+  return (
+    <mesh material={material} renderOrder={-10}>
+      <sphereGeometry args={[95, 24, 16]} />
+    </mesh>
+  );
+}
+
+/* ── Drifting billboard clouds ─────────────────────────────────────── */
+function cloudTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size / 2;
+  const ctx = canvas.getContext("2d")!;
+  const blobs = [
+    [70, 78, 44],
+    [120, 62, 52],
+    [172, 76, 46],
+    [96, 88, 36],
+    [148, 90, 40],
+    [200, 92, 30],
+  ];
+  for (const [x, y, r] of blobs) {
+    const g = ctx.createRadialGradient(x, y, 2, x, y, r);
+    g.addColorStop(0, "rgba(255,255,255,0.92)");
+    g.addColorStop(0.65, "rgba(255,255,255,0.5)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size / 2);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+export function Clouds() {
+  const tex = useMemo(cloudTexture, []);
+  const group = useRef<THREE.Group>(null);
+  const clouds = useMemo(
+    () =>
+      Array.from({ length: 8 }, (_, i) => ({
+        x: (hash01("cx" + i) - 0.5) * 120,
+        y: 15 + hash01("cy" + i) * 9,
+        z: -18 - hash01("cz" + i) * 34,
+        s: 9 + hash01("cs" + i) * 10,
+        v: 0.25 + hash01("cv" + i) * 0.35,
+        o: 0.5 + hash01("co" + i) * 0.35,
+      })),
+    []
+  );
+
+  useFrame((_, dt) => {
+    if (!group.current) return;
+    group.current.children.forEach((c, i) => {
+      c.position.x += clouds[i].v * dt;
+      if (c.position.x > 70) c.position.x = -70;
+    });
+  });
+
+  return (
+    <group ref={group}>
+      {clouds.map((c, i) => (
+        <sprite key={i} position={[c.x, c.y, c.z]} scale={[c.s, c.s * 0.5, 1]}>
+          <spriteMaterial
+            map={tex}
+            transparent
+            opacity={c.o}
+            depthWrite={false}
+            fog={false}
+          />
+        </sprite>
+      ))}
+    </group>
+  );
+}
+
+/* ── Ocean with animated shimmer + foam ring around the island ─────── */
+function oceanTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#4a9ad8";
+  ctx.fillRect(0, 0, size, size);
+  // layered sine "waves" — light streaks
+  for (let i = 0; i < 260; i++) {
+    const x = hash01("ox" + i) * size;
+    const y = hash01("oy" + i) * size;
+    const w = 6 + hash01("ow" + i) * 22;
+    const light = hash01("ol" + i) > 0.4;
+    ctx.fillStyle = light
+      ? `rgba(255,255,255,${0.07 + hash01("oa" + i) * 0.1})`
+      : `rgba(40,90,150,${0.05 + hash01("ob" + i) * 0.07})`;
+    ctx.beginPath();
+    ctx.ellipse(x, y, w, 1.6 + hash01("oh" + i) * 2.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(7, 7);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+export function Ocean() {
+  const tex = useMemo(oceanTexture, []);
+  const mref = useRef<THREE.MeshStandardMaterial>(null);
+  useFrame((state) => {
+    const t = state.clock.elapsedTime;
+    tex.offset.set(t * 0.006, t * 0.004);
+  });
+
+  // Foam collar hugging the beach
+  const foamGeo = useMemo(() => {
+    const outer = roundedRectShape(ISL_W + 4.6, ISL_D + 4.6, ISL_R + 2.2);
+    const inner = roundedRectShape(ISL_W + 1.2, ISL_D + 1.2, ISL_R + 0.8);
+    outer.holes.push(new THREE.Path(inner.getPoints(48).reverse()));
+    return new THREE.ShapeGeometry(outer, 48);
+  }, []);
+  const foamRef = useRef<THREE.MeshBasicMaterial>(null);
+  useFrame((state) => {
+    if (foamRef.current)
+      foamRef.current.opacity =
+        0.28 + Math.sin(state.clock.elapsedTime * 0.9) * 0.1;
+  });
+
+  return (
+    <group>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, SEA_Y, 0]}>
+        <planeGeometry args={[260, 260]} />
+        <meshStandardMaterial
+          ref={mref}
+          map={tex}
+          color="#dceefc"
+          roughness={0.42}
+          metalness={0.05}
+        />
+      </mesh>
+      <mesh
+        geometry={foamGeo}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, SEA_Y + 0.015, 0]}
+      >
+        <meshBasicMaterial
+          ref={foamRef}
+          color={AC.foam}
+          transparent
+          opacity={0.42}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+/* ── Island: cliff walls + sand beach + grass top ──────────────────── */
+function grassTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = AC.grass;
+  ctx.fillRect(0, 0, size, size);
+  // multi-scale mottling
+  for (let i = 0; i < 900; i++) {
+    const x = hash01("gx" + i) * size;
+    const y = hash01("gy" + i) * size;
+    const r = 1 + hash01("gr" + i) * 3.4;
+    const l = hash01("gl" + i);
+    ctx.fillStyle =
+      l > 0.66
+        ? `rgba(178,220,132,${0.10 + l * 0.12})`
+        : l > 0.33
+          ? `rgba(96,150,66,${0.10 + l * 0.10})`
+          : `rgba(70,120,52,${0.08 + l * 0.10})`;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // fine speckle
+  for (let i = 0; i < 1600; i++) {
+    const x = hash01("sx" + i) * size;
+    const y = hash01("sy" + i) * size;
+    ctx.fillStyle =
+      hash01("sl" + i) > 0.5 ? "rgba(200,235,150,0.16)" : "rgba(60,105,45,0.14)";
+    ctx.fillRect(x, y, 1.4, 1.4);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(9, 7);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+export function Island() {
+  const grassTex = useMemo(grassTexture, []);
+
+  const topGeo = useMemo(
+    () => new THREE.ShapeGeometry(roundedRectShape(ISL_W, ISL_D, ISL_R), 48),
+    []
+  );
+  const cliffGeo = useMemo(() => {
+    const shape = roundedRectShape(ISL_W, ISL_D, ISL_R);
+    // No bevel: a bevel would rise above the grass cap and swallow it.
+    const g = new THREE.ExtrudeGeometry(shape, {
+      depth: 2.0,
+      bevelEnabled: false,
+      curveSegments: 40,
+    });
+    return g;
+  }, []);
+  const beachGeo = useMemo(
+    () =>
+      new THREE.ShapeGeometry(
+        roundedRectShape(ISL_W + 2.4, ISL_D + 2.4, ISL_R + 1.2),
+        48
+      ),
+    []
+  );
+
+  return (
+    <group>
+      {/* sand shelf just above the water */}
+      <mesh
+        geometry={beachGeo}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, SEA_Y + 0.06, 0]}
+        receiveShadow
+      >
+        {mat(AC.sand, { roughness: 0.95 })}
+      </mesh>
+
+      {/* cliff body (extruded down from the plateau) */}
+      <mesh geometry={cliffGeo} rotation={[Math.PI / 2, 0, 0]} position={[0, -0.05, 0]}>
+        {mat(AC.cliff, { roughness: 0.95 })}
+      </mesh>
+
+      {/* grass cap */}
+      <mesh
+        geometry={topGeo}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0, 0]}
+        receiveShadow
+      >
+        <meshStandardMaterial map={grassTex} color="#d6f0b2" roughness={0.95} />
+      </mesh>
+    </group>
+  );
+}
+
+/* ── Soft grass variation patches + clover ─────────────────────────── */
+export function GrassField() {
+  const patches = useMemo(() => {
+    const out: { x: number; z: number; s: number; c: string }[] = [];
+    for (let i = 0; i < 26; i++) {
+      const h = hash01("gp" + i);
+      const h2 = hash01("gp2" + i);
+      out.push({
+        x: (h - 0.5) * (WORLD_W + 4),
+        z: (h2 - 0.5) * (WORLD_D + 4),
+        s: 1.4 + hash01("gs" + i) * 2.6,
+        c: h > 0.5 ? AC.grassLight : AC.grassDark,
+      });
+    }
+    return out;
+  }, []);
+
+  return (
+    <group>
+      {patches.map((p, i) => (
+        <mesh
+          key={i}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[p.x, 0.006 + (i % 3) * 0.002, p.z]}
+          receiveShadow
+        >
+          <circleGeometry args={[p.s, 20]} />
+          <meshStandardMaterial
+            color={p.c}
+            roughness={1}
+            transparent
+            opacity={0.22}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/* ── Pine tree — layered rounded cones ─────────────────────────────── */
 export function ACTree({
   position,
   scale = 1,
@@ -63,53 +412,39 @@ export function ACTree({
   seed?: string;
 }) {
   const s = 0.9 + hash01(seed) * 0.4;
-  const lean = (hash01(seed + "l") - 0.5) * 0.06;
+  const lean = (hash01(seed + "l") - 0.5) * 0.05;
   const h = scale * s;
-  // AC pines: rounded cone layers with bright sun-facing tops
   return (
-    <group position={position} scale={h} rotation={[0, hash01(seed + "r") * Math.PI * 2, lean]}>
+    <group
+      position={position}
+      scale={h}
+      rotation={[0, hash01(seed + "r") * Math.PI * 2, lean]}
+    >
       <mesh position={[0, 0.28, 0]} castShadow>
-        <cylinderGeometry args={[0.07, 0.11, 0.55, 8]} />
+        <cylinderGeometry args={[0.07, 0.12, 0.55, 7]} />
         {mat(AC.trunk)}
       </mesh>
-      {/* bottom skirt */}
-      <mesh position={[0, 0.7, 0]} castShadow>
-        <sphereGeometry args={[0.42, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+      <mesh position={[0, 0.62, 0]} castShadow>
+        <coneGeometry args={[0.55, 0.6, 9]} />
         {mat(AC.canopyDeep)}
       </mesh>
-      <mesh position={[0, 0.55, 0]} castShadow>
-        <coneGeometry args={[0.52, 0.55, 10]} />
-        {mat(AC.canopyDeep)}
-      </mesh>
-      <mesh position={[0, 0.95, 0]} castShadow>
-        <coneGeometry args={[0.42, 0.55, 10]} />
+      <mesh position={[0, 1.0, 0]} castShadow>
+        <coneGeometry args={[0.43, 0.58, 9]} />
         {mat(AC.canopyMid)}
       </mesh>
-      <mesh position={[0, 1.3, 0]} castShadow>
-        <coneGeometry args={[0.3, 0.5, 10]} />
+      <mesh position={[0, 1.35, 0]} castShadow>
+        <coneGeometry args={[0.3, 0.52, 9]} />
         {mat(AC.canopyLite)}
       </mesh>
-      <mesh position={[0, 1.55, 0]} castShadow>
-        <coneGeometry args={[0.16, 0.38, 9]} />
+      <mesh position={[0, 1.64, 0]} castShadow>
+        <coneGeometry args={[0.15, 0.36, 8]} />
         {mat(AC.canopyTip)}
-      </mesh>
-      {/* sun highlight blob on top-facing side */}
-      <mesh position={[0.08, 1.35, 0.08]}>
-        <sphereGeometry args={[0.12, 8, 6]} />
-        <meshStandardMaterial
-          color={AC.canopyTip}
-          emissive={AC.canopyTip}
-          emissiveIntensity={0.15}
-          roughness={0.7}
-          transparent
-          opacity={0.7}
-        />
       </mesh>
     </group>
   );
 }
 
-/* ── Round deciduous tree (softer, village edge) ───────────────────── */
+/* ── Round deciduous tree ──────────────────────────────────────────── */
 export function ACRoundTree({
   position,
   scale = 1,
@@ -123,21 +458,232 @@ export function ACRoundTree({
   return (
     <group position={position} scale={s}>
       <mesh position={[0, 0.4, 0]} castShadow>
-        <cylinderGeometry args={[0.07, 0.1, 0.8, 8]} />
+        <cylinderGeometry args={[0.08, 0.11, 0.8, 7]} />
         {mat(AC.trunk)}
       </mesh>
-      <mesh position={[0, 1.15, 0]} castShadow>
-        <sphereGeometry args={[0.55, 12, 10]} />
+      <mesh position={[0, 1.12, 0]} castShadow>
+        <sphereGeometry args={[0.56, 12, 10]} />
         {mat(AC.canopyMid)}
       </mesh>
-      <mesh position={[0.25, 1.3, 0.15]} castShadow>
-        <sphereGeometry args={[0.35, 10, 8]} />
+      <mesh position={[0.26, 1.3, 0.14]} castShadow>
+        <sphereGeometry args={[0.34, 10, 8]} />
         {mat(AC.canopyLite)}
       </mesh>
-      <mesh position={[-0.2, 1.25, -0.15]} castShadow>
-        <sphereGeometry args={[0.32, 10, 8]} />
+      <mesh position={[-0.22, 1.22, -0.16]} castShadow>
+        <sphereGeometry args={[0.3, 10, 8]} />
         {mat(AC.canopyDeep)}
       </mesh>
+    </group>
+  );
+}
+
+/* ── Rock ──────────────────────────────────────────────────────────── */
+export function Rock({
+  position,
+  seed = "k",
+  scale = 1,
+}: {
+  position: [number, number, number];
+  seed?: string;
+  scale?: number;
+}) {
+  const s = scale * (0.16 + hash01(seed) * 0.22);
+  return (
+    <mesh
+      position={[position[0], s * 0.55, position[2]]}
+      rotation={[
+        hash01(seed + "rx") * Math.PI,
+        hash01(seed + "ry") * Math.PI,
+        0,
+      ]}
+      scale={[s * 1.35, s, s]}
+      castShadow
+      receiveShadow
+    >
+      <dodecahedronGeometry args={[1, 0]} />
+      {mat(AC.stone, { roughness: 0.95 })}
+    </mesh>
+  );
+}
+
+/* ── Bush ──────────────────────────────────────────────────────────── */
+export function Bush({
+  position,
+  seed = "b",
+}: {
+  position: [number, number, number];
+  seed?: string;
+}) {
+  const s = 0.28 + hash01(seed) * 0.2;
+  return (
+    <group position={position} scale={s}>
+      <mesh position={[0, 0.5, 0]} castShadow>
+        <sphereGeometry args={[0.8, 10, 8]} />
+        {mat(AC.canopyMid)}
+      </mesh>
+      <mesh position={[0.5, 0.35, 0.15]} castShadow>
+        <sphereGeometry args={[0.55, 9, 7]} />
+        {mat(AC.canopyLite)}
+      </mesh>
+      <mesh position={[-0.45, 0.35, -0.1]} castShadow>
+        <sphereGeometry args={[0.5, 9, 7]} />
+        {mat(AC.canopyDeep)}
+      </mesh>
+    </group>
+  );
+}
+
+/* ── Flower tuft — petal ring + center ─────────────────────────────── */
+export function ACFlowers({
+  position,
+  seed = "f",
+}: {
+  position: [number, number, number];
+  seed?: string;
+}) {
+  const colors = [AC.flowerY, AC.flowerP, AC.flowerB, AC.flowerR];
+  const c = colors[Math.floor(hash01(seed) * colors.length)];
+  const petals = 5;
+  return (
+    <group position={position} rotation={[0, hash01(seed + "r") * Math.PI, 0]}>
+      <mesh position={[0, 0.08, 0]}>
+        <cylinderGeometry args={[0.012, 0.018, 0.16, 5]} />
+        {mat(AC.canopyMid)}
+      </mesh>
+      {Array.from({ length: petals }, (_, i) => {
+        const a = (i / petals) * Math.PI * 2;
+        return (
+          <mesh
+            key={i}
+            position={[Math.cos(a) * 0.05, 0.17, Math.sin(a) * 0.05]}
+          >
+            <sphereGeometry args={[0.035, 7, 6]} />
+            {mat(c)}
+          </mesh>
+        );
+      })}
+      <mesh position={[0, 0.18, 0]}>
+        <sphereGeometry args={[0.028, 7, 6]} />
+        <meshStandardMaterial
+          color="#f8e070"
+          emissive="#f8e070"
+          emissiveIntensity={0.25}
+          roughness={0.6}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+/* ── Chimney smoke — looping soft puffs ────────────────────────────── */
+function smokeTexture(): THREE.Texture {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+  g.addColorStop(0, "rgba(255,255,255,0.85)");
+  g.addColorStop(0.7, "rgba(255,255,255,0.32)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+let SMOKE_TEX: THREE.Texture | null = null;
+
+export function ChimneySmoke({
+  position,
+  seed = "s",
+}: {
+  position: [number, number, number];
+  seed?: string;
+}) {
+  const tex = useMemo(() => {
+    if (!SMOKE_TEX) SMOKE_TEX = smokeTexture();
+    return SMOKE_TEX;
+  }, []);
+  const group = useRef<THREE.Group>(null);
+  const offset = useMemo(() => hash01(seed) * 4, [seed]);
+  const N = 4;
+
+  useFrame((state) => {
+    if (!group.current) return;
+    const t = state.clock.elapsedTime + offset;
+    group.current.children.forEach((c, i) => {
+      const phase = ((t * 0.28 + i / N) % 1 + 1) % 1;
+      const sp = c as THREE.Sprite;
+      sp.position.y = phase * 1.5;
+      sp.position.x = Math.sin((phase * 3 + i) * 2.1) * 0.12 * phase;
+      const s = 0.16 + phase * 0.5;
+      sp.scale.set(s, s, s);
+      (sp.material as THREE.SpriteMaterial).opacity =
+        phase < 0.12 ? phase * 4 : 0.55 * (1 - phase);
+    });
+  });
+
+  return (
+    <group ref={group} position={position}>
+      {Array.from({ length: N }, (_, i) => (
+        <sprite key={i}>
+          <spriteMaterial map={tex} transparent depthWrite={false} />
+        </sprite>
+      ))}
+    </group>
+  );
+}
+
+/* ── Butterflies — wandering, wing-flapping ────────────────────────── */
+export function Butterflies({ seed = "bf" }: { seed?: string }) {
+  const group = useRef<THREE.Group>(null);
+  const items = useMemo(
+    () =>
+      Array.from({ length: 5 }, (_, i) => ({
+        hx: (hash01(seed + "x" + i) - 0.5) * (WORLD_W - 6),
+        hz: (hash01(seed + "z" + i) - 0.5) * (WORLD_D - 4),
+        r: 1.6 + hash01(seed + "r" + i) * 2.4,
+        v: 0.35 + hash01(seed + "v" + i) * 0.4,
+        ph: hash01(seed + "p" + i) * Math.PI * 2,
+        c: [AC.flowerY, AC.flowerP, "#ffffff", AC.flowerB][i % 4],
+      })),
+    [seed]
+  );
+
+  useFrame((state) => {
+    if (!group.current) return;
+    const t = state.clock.elapsedTime;
+    group.current.children.forEach((b, i) => {
+      const it = items[i];
+      const a = t * it.v + it.ph;
+      b.position.set(
+        it.hx + Math.cos(a) * it.r,
+        0.7 + Math.sin(t * 1.7 + it.ph) * 0.25,
+        it.hz + Math.sin(a * 1.35) * it.r * 0.7
+      );
+      b.rotation.y = -a - Math.PI / 2;
+      const flap = Math.sin(t * 18 + it.ph) * 0.75;
+      const wings = b.children as THREE.Object3D[];
+      if (wings[0]) wings[0].rotation.z = flap;
+      if (wings[1]) wings[1].rotation.z = -flap;
+    });
+  });
+
+  return (
+    <group ref={group}>
+      {items.map((it, i) => (
+        <group key={i}>
+          <mesh position={[-0.055, 0, 0]}>
+            <planeGeometry args={[0.11, 0.09]} />
+            <meshBasicMaterial color={it.c} side={THREE.DoubleSide} />
+          </mesh>
+          <mesh position={[0.055, 0, 0]}>
+            <planeGeometry args={[0.11, 0.09]} />
+            <meshBasicMaterial color={it.c} side={THREE.DoubleSide} />
+          </mesh>
+        </group>
+      ))}
     </group>
   );
 }
@@ -156,10 +702,10 @@ export function ACHouse({
 }) {
   return (
     <group position={position} rotation={[0, rotation, 0]}>
-      {/* foundation / base trim */}
+      {/* stone foundation */}
       <mesh position={[0, 0.08, 0]} receiveShadow castShadow>
-        <boxGeometry args={[1.85, 0.16, 1.5]} />
-        {mat("#3A5A8A")}
+        <boxGeometry args={[1.9, 0.16, 1.55]} />
+        {mat("#8f887a")}
       </mesh>
 
       {/* log walls */}
@@ -167,7 +713,6 @@ export function ACHouse({
         <boxGeometry args={[1.7, 1.15, 1.35]} />
         {mat(AC.log)}
       </mesh>
-      {/* log horizontal lines via thin darker strips */}
       {[-0.2, 0.05, 0.3, 0.55].map((y, i) => (
         <mesh key={i} position={[0, 0.45 + y * 0.6, 0.68]}>
           <boxGeometry args={[1.72, 0.045, 0.02]} />
@@ -175,41 +720,50 @@ export function ACHouse({
         </mesh>
       ))}
 
-      {/* roof — hip style, green like reference */}
-      <mesh position={[0, 1.5, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
-        <coneGeometry args={[1.5, 0.95, 4]} />
+      {/* hipped roof with accent ridge */}
+      <mesh position={[0, 1.52, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+        <coneGeometry args={[1.52, 1.0, 4]} />
         {mat(AC.roof)}
       </mesh>
-      <mesh position={[0, 1.9, 0]}>
-        <boxGeometry args={[0.22, 0.09, 0.22]} />
+      <mesh position={[0, 1.55, 0]} rotation={[0, Math.PI / 4, 0]}>
+        <coneGeometry args={[1.58, 0.22, 4]} />
+        {mat(AC.roofDark)}
+      </mesh>
+      <mesh position={[0, 2.06, 0]}>
+        <boxGeometry args={[0.2, 0.1, 0.2]} />
         {mat(AC.roofDark)}
       </mesh>
 
-      {/* chimney */}
-      <mesh position={[0.5, 1.7, -0.22]} castShadow>
-        <boxGeometry args={[0.24, 0.5, 0.24]} />
+      {/* chimney + smoke */}
+      <mesh position={[0.5, 1.75, -0.22]} castShadow>
+        <boxGeometry args={[0.24, 0.55, 0.24]} />
         {mat(AC.stone)}
       </mesh>
-      <mesh position={[0.5, 1.98, -0.22]}>
+      <mesh position={[0.5, 2.05, -0.22]}>
         <boxGeometry args={[0.3, 0.09, 0.3]} />
-        {mat("#909088")}
+        {mat("#8a8478")}
       </mesh>
+      <ChimneySmoke position={[0.5, 2.15, -0.22]} seed={accent} />
 
-      {/* door */}
-      <mesh position={[0, 0.48, 0.69]} castShadow>
-        <boxGeometry args={[0.36, 0.62, 0.06]} />
+      {/* door with accent frame */}
+      <mesh position={[0, 0.5, 0.69]} castShadow>
+        <boxGeometry args={[0.42, 0.68, 0.05]} />
+        {mat(accent)}
+      </mesh>
+      <mesh position={[0, 0.48, 0.72]}>
+        <boxGeometry args={[0.32, 0.58, 0.04]} />
         {mat(AC.door)}
       </mesh>
-      <mesh position={[0.12, 0.48, 0.73]}>
-        <sphereGeometry args={[0.035, 8, 8]} />
-        {mat("#E8C050")}
+      <mesh position={[0.1, 0.48, 0.75]}>
+        <sphereGeometry args={[0.03, 8, 8]} />
+        {mat("#e8c050", { roughness: 0.4, metalness: 0.4 })}
       </mesh>
 
       {/* windows — warm glow */}
       {(
         [
-          [-0.5, 0.8, 0.69],
-          [0.5, 0.8, 0.69],
+          [-0.5, 0.82, 0.69],
+          [0.5, 0.82, 0.69],
         ] as [number, number, number][]
       ).map((p, i) => (
         <group key={i} position={p}>
@@ -221,27 +775,26 @@ export function ACHouse({
             <boxGeometry args={[0.3, 0.26, 0.02]} />
             <meshStandardMaterial
               color={AC.windowGlow}
-              emissive={glow ? AC.windowGlow : "#886622"}
-              emissiveIntensity={glow ? 1.1 : 0.15}
+              emissive={AC.windowGlow}
+              emissiveIntensity={glow ? 1.8 : 0.2}
               roughness={0.35}
             />
           </mesh>
-          <mesh position={[0, 0, 0.03]}>
+          <mesh position={[0, 0, 0.035]}>
             <boxGeometry args={[0.03, 0.26, 0.01]} />
             {mat(AC.windowFrame)}
           </mesh>
-          <mesh position={[0, 0, 0.03]}>
+          <mesh position={[0, 0, 0.035]}>
             <boxGeometry args={[0.3, 0.03, 0.01]} />
             {mat(AC.windowFrame)}
           </mesh>
+          {/* window box flowers */}
+          <mesh position={[0, -0.2, 0.05]} castShadow>
+            <boxGeometry args={[0.34, 0.07, 0.09]} />
+            {mat("#7a5a34")}
+          </mesh>
         </group>
       ))}
-
-      {/* side window (pinkish like ref) */}
-      <mesh position={[0.86, 0.6, 0.15]} rotation={[0, Math.PI / 2, 0]}>
-        <boxGeometry args={[0.3, 0.24, 0.04]} />
-        {mat("#E8A0B0")}
-      </mesh>
 
       {/* mailbox */}
       <group position={[1.15, 0, 0.4]}>
@@ -253,16 +806,26 @@ export function ACHouse({
           <boxGeometry args={[0.32, 0.2, 0.18]} />
           {mat(AC.mailbox)}
         </mesh>
-        <mesh position={[0.1, 0.72, 0]}>
-          <boxGeometry args={[0.34, 0.05, 0.2]} />
-          {mat("#C05030")}
+      </group>
+
+      {/* short picket fence, front-left */}
+      <group position={[-0.95, 0, 0.62]}>
+        {[0, 0.22, 0.44].map((x, i) => (
+          <mesh key={i} position={[-x, 0.16, 0]} castShadow>
+            <boxGeometry args={[0.06, 0.32, 0.04]} />
+            {mat(AC.logLite)}
+          </mesh>
+        ))}
+        <mesh position={[-0.22, 0.24, 0]}>
+          <boxGeometry args={[0.56, 0.045, 0.03]} />
+          {mat(AC.logLite)}
         </mesh>
       </group>
 
-      {/* soft pad ring under house */}
-      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[1.3, 28]} />
-        <meshStandardMaterial color={accent} transparent opacity={0.22} roughness={1} />
+      {/* accent pad ring under house */}
+      <mesh position={[0, 0.015, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <circleGeometry args={[1.35, 30]} />
+        <meshStandardMaterial color={accent} transparent opacity={0.16} roughness={1} />
       </mesh>
     </group>
   );
@@ -280,41 +843,61 @@ export function ACCottage({
 }) {
   return (
     <group position={position}>
-      {/* stone pad */}
-      <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[0.55, 24]} />
-        <meshStandardMaterial color={color} roughness={0.75} metalness={0.05} />
+      {/* status pad */}
+      <mesh position={[0, 0.025, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <circleGeometry args={[0.6, 26]} />
+        <meshStandardMaterial color={color} roughness={0.7} metalness={0.05} />
       </mesh>
-      <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.48, 0.55, 24]} />
-        <meshStandardMaterial color="#F0D878" roughness={0.6} />
+      <mesh position={[0, 0.035, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.52, 0.6, 26]} />
+        <meshStandardMaterial
+          color="#f6e6b2"
+          emissive={built ? "#f6e6b2" : "#000000"}
+          emissiveIntensity={built ? 0.25 : 0}
+          roughness={0.6}
+        />
       </mesh>
 
-      {/* tiny hut */}
-      <mesh position={[0, 0.28, 0]} castShadow>
-        <boxGeometry args={[0.55, 0.4, 0.5]} />
+      {/* hut */}
+      <mesh position={[0, 0.3, 0]} castShadow>
+        <boxGeometry args={[0.56, 0.42, 0.5]} />
         {mat(AC.logLite)}
       </mesh>
-      <mesh position={[0, 0.58, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
-        <coneGeometry args={[0.48, 0.35, 4]} />
-        {mat(built ? AC.roofLite : AC.roof)}
+      {/* roof takes the status color — readable from the sky */}
+      <mesh position={[0, 0.62, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+        <coneGeometry args={[0.5, 0.38, 4]} />
+        {mat(color)}
       </mesh>
-      <mesh position={[0, 0.22, 0.26]}>
-        <boxGeometry args={[0.14, 0.22, 0.04]} />
+      <mesh position={[0, 0.24, 0.26]}>
+        <boxGeometry args={[0.15, 0.24, 0.04]} />
         {mat(AC.door)}
       </mesh>
+      {/* tiny window, lit when built */}
+      <mesh position={[0.17, 0.32, 0.26]}>
+        <boxGeometry args={[0.1, 0.1, 0.03]} />
+        <meshStandardMaterial
+          color={AC.windowGlow}
+          emissive={AC.windowGlow}
+          emissiveIntensity={built ? 1.6 : 0.12}
+          roughness={0.4}
+        />
+      </mesh>
       {built && (
-        <mesh position={[0.28, 0.55, 0]}>
-          {/* flag pole */}
-          <cylinderGeometry args={[0.015, 0.015, 0.5, 6]} />
-          {mat("#EEE")}
-        </mesh>
-      )}
-      {built && (
-        <mesh position={[0.38, 0.7, 0]}>
-          <boxGeometry args={[0.18, 0.12, 0.02]} />
-          {mat("#F0C94A")}
-        </mesh>
+        <group position={[0.3, 0, 0]}>
+          <mesh position={[0, 0.42, 0]}>
+            <cylinderGeometry args={[0.014, 0.014, 0.72, 6]} />
+            {mat("#e8e4da")}
+          </mesh>
+          <mesh position={[0.1, 0.68, 0]}>
+            <boxGeometry args={[0.19, 0.12, 0.015]} />
+            <meshStandardMaterial
+              color="#fbbf24"
+              emissive="#fbbf24"
+              emissiveIntensity={0.5}
+              roughness={0.5}
+            />
+          </mesh>
+        </group>
       )}
     </group>
   );
@@ -325,152 +908,106 @@ export function ACMystery({ position }: { position: [number, number, number] }) 
   const ref = useRef<THREE.Group>(null);
   useFrame((state) => {
     if (ref.current) {
-      ref.current.position.y = Math.sin(state.clock.elapsedTime * 2) * 0.08 + 0.15;
+      ref.current.position.y =
+        Math.sin(state.clock.elapsedTime * 2) * 0.08 + 0.42;
       ref.current.rotation.y = state.clock.elapsedTime * 0.6;
     }
   });
   return (
     <group position={position}>
-      <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[0.5, 24]} />
-        <meshStandardMaterial color="#F0C94A" roughness={0.7} />
+      <mesh position={[0, 0.025, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <circleGeometry args={[0.52, 24]} />
+        <meshStandardMaterial color="#f0c94a" transparent opacity={0.4} roughness={0.7} />
       </mesh>
       <group ref={ref}>
         <mesh castShadow>
-          <boxGeometry args={[0.45, 0.45, 0.45]} />
-          {mat("#F0C94A")}
+          <boxGeometry args={[0.44, 0.44, 0.44]} />
+          <meshStandardMaterial
+            color="#f5c842"
+            emissive="#f5c842"
+            emissiveIntensity={0.35}
+            roughness={0.5}
+          />
         </mesh>
-        {/* ? approximated as two blobs */}
-        <mesh position={[0, 0.05, 0.24]}>
-          <sphereGeometry args={[0.08, 8, 8]} />
-          {mat("#C06020")}
-        </mesh>
-        <mesh position={[0, -0.12, 0.24]}>
-          <sphereGeometry args={[0.05, 8, 8]} />
-          {mat("#C06020")}
-        </mesh>
+        {([0, Math.PI / 2, Math.PI, -Math.PI / 2] as number[]).map((a, i) => (
+          <group key={i} rotation={[0, a, 0]}>
+            <mesh position={[0, 0.03, 0.225]}>
+              <sphereGeometry args={[0.07, 8, 8]} />
+              {mat("#7a4a10")}
+            </mesh>
+            <mesh position={[0, -0.13, 0.225]}>
+              <sphereGeometry args={[0.04, 8, 8]} />
+              {mat("#7a4a10")}
+            </mesh>
+          </group>
+        ))}
       </group>
     </group>
   );
 }
 
-/* ── Player (cute rounded villager-ish explorer) ───────────────────── */
-export function ACPlayer({
-  position,
-  facing,
-  walking,
-}: {
-  position: [number, number, number];
-  facing: number; // yaw radians
-  walking: boolean;
-}) {
-  const group = useRef<THREE.Group>(null);
-  const bob = useRef(0);
-
-  useFrame((_, dt) => {
-    if (!group.current) return;
-    bob.current += dt * (walking ? 12 : 3);
-    const y = walking
-      ? Math.abs(Math.sin(bob.current)) * 0.08
-      : Math.sin(bob.current) * 0.02 + 0.02;
-    group.current.position.y = y;
-    // smooth face
-    const cur = group.current.rotation.y;
-    let diff = facing - cur;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    group.current.rotation.y = cur + diff * Math.min(1, dt * 12);
-  });
-
+/* ── Lamp post — warm glow along paths ─────────────────────────────── */
+export function LampPost({ position }: { position: [number, number, number] }) {
   return (
     <group position={position}>
-      {/* shadow disc */}
-      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[0.28, 16]} />
-        <meshStandardMaterial color="#000" transparent opacity={0.22} roughness={1} />
+      <mesh position={[0, 0.5, 0]} castShadow>
+        <cylinderGeometry args={[0.03, 0.045, 1.0, 7]} />
+        {mat("#4a423a")}
       </mesh>
-      <group ref={group}>
-        {/* feet */}
-        <mesh position={[-0.08, 0.08, 0.06]} castShadow>
-          <sphereGeometry args={[0.09, 10, 8]} />
-          {mat(AC.playerFeet)}
-        </mesh>
-        <mesh position={[0.08, 0.08, 0.06]} castShadow>
-          <sphereGeometry args={[0.09, 10, 8]} />
-          {mat(AC.playerFeet)}
-        </mesh>
-        {/* body */}
-        <mesh position={[0, 0.32, 0]} castShadow>
-          <capsuleGeometry args={[0.18, 0.22, 6, 12]} />
-          {mat(AC.playerBody)}
-        </mesh>
-        {/* head */}
-        <mesh position={[0, 0.62, 0]} castShadow>
-          <sphereGeometry args={[0.2, 14, 12]} />
-          {mat(AC.playerBody)}
-        </mesh>
-        {/* face plate */}
-        <mesh position={[0, 0.6, 0.14]}>
-          <sphereGeometry args={[0.12, 10, 8]} />
-          {mat(AC.playerFace)}
-        </mesh>
-        {/* eyes */}
-        <mesh position={[-0.05, 0.62, 0.22]}>
-          <sphereGeometry args={[0.03, 8, 8]} />
-          {mat("#1A1A1A")}
-        </mesh>
-        <mesh position={[0.05, 0.62, 0.22]}>
-          <sphereGeometry args={[0.03, 8, 8]} />
-          {mat("#1A1A1A")}
-        </mesh>
-        {/* ears / hood bumps */}
-        <mesh position={[-0.16, 0.72, 0]} castShadow>
-          <sphereGeometry args={[0.08, 8, 8]} />
-          {mat(AC.playerDark)}
-        </mesh>
-        <mesh position={[0.16, 0.72, 0]} castShadow>
-          <sphereGeometry args={[0.08, 8, 8]} />
-          {mat(AC.playerDark)}
-        </mesh>
-        {/* backpack */}
-        <mesh position={[0, 0.35, -0.16]} castShadow>
-          <boxGeometry args={[0.22, 0.22, 0.1]} />
-          {mat("#5A3A20")}
-        </mesh>
-      </group>
-    </group>
-  );
-}
-
-/* ── Flower tuft ───────────────────────────────────────────────────── */
-export function ACFlowers({
-  position,
-  seed = "f",
-}: {
-  position: [number, number, number];
-  seed?: string;
-}) {
-  const colors = [AC.flowerY, AC.flowerP, AC.flowerB];
-  const c = colors[Math.floor(hash01(seed) * colors.length)];
-  return (
-    <group position={position}>
-      <mesh position={[0, 0.06, 0]}>
-        <cylinderGeometry args={[0.01, 0.015, 0.12, 5]} />
-        {mat(AC.canopyMid)}
+      <mesh position={[0, 1.05, 0]} castShadow>
+        <boxGeometry args={[0.14, 0.18, 0.14]} />
+        <meshStandardMaterial
+          color={AC.windowGlow}
+          emissive={AC.windowGlow}
+          emissiveIntensity={2.2}
+          roughness={0.3}
+        />
       </mesh>
-      <mesh position={[0, 0.14, 0]}>
-        <sphereGeometry args={[0.05, 8, 6]} />
-        {mat(c)}
-      </mesh>
-      <mesh position={[0.06, 0.05, 0.03]}>
-        <sphereGeometry args={[0.035, 6, 5]} />
-        {mat(colors[(Math.floor(hash01(seed + "b") * 3) + 1) % 3])}
+      <mesh position={[0, 1.16, 0]}>
+        <coneGeometry args={[0.13, 0.1, 4]} />
+        {mat("#4a423a")}
       </mesh>
     </group>
   );
 }
 
-/* ── Dirt path — overlapping discs for soft AC curves ──────────────── */
+/* ── Dirt path — smooth ribbon geometry (2 draw calls per path) ────── */
+function ribbonGeometry(
+  points: { x: number; z: number }[],
+  width: number
+): THREE.BufferGeometry {
+  const n = points.length;
+  const pos = new Float32Array(n * 2 * 3);
+  const uv = new Float32Array(n * 2 * 2);
+  const idx: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = points[i];
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(n - 1, i + 1)];
+    let dx = next.x - prev.x;
+    let dz = next.z - prev.z;
+    const len = Math.hypot(dx, dz) || 1;
+    dx /= len;
+    dz /= len;
+    const nx = -dz;
+    const nz = dx;
+    const w = width / 2;
+    pos.set([p.x + nx * w, 0, p.z + nz * w, p.x - nx * w, 0, p.z - nz * w], i * 6);
+    uv.set([0, i / (n - 1), 1, i / (n - 1)], i * 4);
+    if (i < n - 1) {
+      const a = i * 2;
+      // wound so face normals point +Y (visible from above)
+      idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 export function DirtPath({
   points,
   width = 1.15,
@@ -478,162 +1015,36 @@ export function DirtPath({
   points: { x: number; z: number }[];
   width?: number;
 }) {
-  // densify samples for smooth curves
-  const stamps = useMemo(() => {
-    if (points.length < 2) return [] as { x: number; z: number }[];
-    const out: { x: number; z: number }[] = [];
-    for (let i = 0; i < points.length - 1; i++) {
-      const a = points[i];
-      const b = points[i + 1];
-      const dist = Math.hypot(b.x - a.x, b.z - a.z);
-      const steps = Math.max(2, Math.ceil(dist / 0.22));
-      for (let s = 0; s < steps; s++) {
-        const t = s / steps;
-        out.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
-      }
-    }
-    out.push(points[points.length - 1]);
-    return out;
-  }, [points]);
-
-  const r = width * 0.52;
-  const rEdge = r + 0.14;
-
-  return (
-    <group>
-      {stamps.map((p, i) => (
-        <mesh
-          key={`e${i}`}
-          position={[p.x, 0.016, p.z]}
-          rotation={[-Math.PI / 2, 0, 0]}
-          receiveShadow
-        >
-          <circleGeometry args={[rEdge, 20]} />
-          <meshStandardMaterial color={AC.dirtEdge} roughness={0.96} />
-        </mesh>
-      ))}
-      {stamps.map((p, i) => (
-        <mesh
-          key={`d${i}`}
-          position={[p.x, 0.022, p.z]}
-          rotation={[-Math.PI / 2, 0, 0]}
-          receiveShadow
-        >
-          <circleGeometry args={[r, 20]} />
-          <meshStandardMaterial color={AC.dirtPath} roughness={0.93} />
-        </mesh>
-      ))}
-      {/* soft center highlight */}
-      {stamps
-        .filter((_, i) => i % 2 === 0)
-        .map((p, i) => (
-          <mesh
-            key={`h${i}`}
-            position={[p.x, 0.026, p.z]}
-            rotation={[-Math.PI / 2, 0, 0]}
-          >
-            <circleGeometry args={[r * 0.45, 12]} />
-            <meshStandardMaterial
-              color={AC.dirtLight}
-              roughness={1}
-              transparent
-              opacity={0.35}
-            />
-          </mesh>
-        ))}
-    </group>
+  const geoMain = useMemo(() => ribbonGeometry(points, width), [points, width]);
+  const geoEdge = useMemo(
+    () => ribbonGeometry(points, width + 0.28),
+    [points, width]
   );
-}
-
-/* ── Grass field — tiled soft texture like AC lawn ─────────────────── */
-export function GrassField() {
-  const texture = useMemo(() => {
-    const size = 128;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d")!;
-    // base
-    ctx.fillStyle = "#8FBF6A";
-    ctx.fillRect(0, 0, size, size);
-    // soft checker / tuft noise (AC lawn is faintly tiled)
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const n =
-          Math.sin(x * 0.35) * Math.cos(y * 0.31) +
-          Math.sin((x + y) * 0.18) * 0.5;
-        const cell = ((Math.floor(x / 16) + Math.floor(y / 16)) % 2) * 0.04;
-        const v = 0.55 + n * 0.06 + cell;
-        const g = Math.floor(140 + v * 50);
-        const r = Math.floor(90 + v * 30);
-        const b = Math.floor(60 + v * 25);
-        if ((x * 13 + y * 7) % 11 === 0) {
-          ctx.fillStyle = `rgba(${r},${g},${b},0.55)`;
-          ctx.fillRect(x, y, 1, 1);
-        }
-      }
-    }
-    // sparse flower dots
-    for (let i = 0; i < 40; i++) {
-      const x = (Math.sin(i * 12.1) * 0.5 + 0.5) * size;
-      const y = (Math.cos(i * 9.7) * 0.5 + 0.5) * size;
-      ctx.fillStyle = i % 3 === 0 ? "#f5e05088" : "#90c07066";
-      ctx.beginPath();
-      ctx.arc(x, y, 1.2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(14, 10);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.magFilter = THREE.LinearFilter;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
-    return tex;
-  }, []);
-
-  const patches = useMemo(() => {
-    const out: { x: number; z: number; s: number; c: string }[] = [];
-    for (let i = 0; i < 28; i++) {
-      const h = hash01("gp" + i);
-      const h2 = hash01("gp2" + i);
-      out.push({
-        x: (h - 0.5) * 28,
-        z: (h2 - 0.5) * 20,
-        s: 1.2 + hash01("gs" + i) * 2.4,
-        c: h > 0.5 ? AC.grassLight : AC.grassDark,
-      });
-    }
-    return out;
-  }, []);
-
   return (
     <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
-        <planeGeometry args={[42, 32, 1, 1]} />
-        <meshStandardMaterial map={texture} roughness={0.95} color="#c8e8a8" />
+      <mesh geometry={geoEdge} position={[0, 0.014, 0]} receiveShadow>
+        <meshStandardMaterial
+          color={AC.dirtEdge}
+          roughness={0.97}
+          side={THREE.DoubleSide}
+        />
       </mesh>
-      {patches.map((p, i) => (
-        <mesh
-          key={i}
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[p.x, 0.004, p.z]}
-          receiveShadow
-        >
-          <circleGeometry args={[p.s, 18]} />
-          <meshStandardMaterial
-            color={p.c}
-            roughness={1}
-            transparent
-            opacity={0.28}
-          />
-        </mesh>
-      ))}
+      <mesh geometry={geoMain} position={[0, 0.022, 0]} receiveShadow>
+        <meshStandardMaterial
+          color={AC.dirtPath}
+          roughness={0.94}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
     </group>
   );
 }
 
-/* ── Forest belt generator ─────────────────────────────────────────── */
+/* ── Forest belt + ground clutter around the island edge ───────────── */
 export function ForestBelt({ seed }: { seed: string }) {
+  const HW = WORLD_W / 2;
+  const HD = WORLD_D / 2;
+
   const trees = useMemo(() => {
     const out: {
       x: number;
@@ -642,52 +1053,93 @@ export function ForestBelt({ seed }: { seed: string }) {
       kind: "pine" | "round";
       id: string;
     }[] = [];
-    // Left forest
-    for (let i = 0; i < 28; i++) {
-      const row = Math.floor(i / 4);
-      const col = i % 4;
-      const jx = (hash01(seed + "lx" + i) - 0.5) * 0.7;
-      const jz = (hash01(seed + "lz" + i) - 0.5) * 0.7;
+    // North treeline (behind everything) — two staggered rows on the island
+    for (let i = 0; i < 16; i++) {
       out.push({
-        x: -12.5 + col * 0.85 + jx,
-        z: -8 + row * 1.05 + jz,
-        s: 0.9 + hash01(seed + "ls" + i) * 0.45,
+        x: -HW - 1 + i * ((WORLD_W + 2) / 15) + (hash01(seed + "nx" + i) - 0.5) * 0.8,
+        z: -HD - 2.4 + (hash01(seed + "nz" + i) - 0.5) * 0.9,
+        s: 1.05 + hash01(seed + "ns" + i) * 0.4,
         kind: "pine",
-        id: "L" + i,
+        id: "N" + i,
       });
     }
-    // Right forest
-    for (let i = 0; i < 18; i++) {
+    for (let i = 0; i < 12; i++) {
+      out.push({
+        x: -HW + 0.6 + i * ((WORLD_W - 1) / 11) + (hash01(seed + "mx" + i) - 0.5) * 1.1,
+        z: -HD - 0.9 + (hash01(seed + "mz" + i) - 0.5) * 0.8,
+        s: 0.85 + hash01(seed + "ms" + i) * 0.4,
+        kind: hash01(seed + "mk" + i) > 0.7 ? "round" : "pine",
+        id: "M" + i,
+      });
+    }
+    // West cluster
+    for (let i = 0; i < 10; i++) {
       const row = Math.floor(i / 3);
       const col = i % 3;
       out.push({
-        x: 11 + col * 0.9 + (hash01(seed + "rx" + i) - 0.5) * 0.6,
-        z: -6 + row * 1.1 + (hash01(seed + "rz" + i) - 0.5) * 0.6,
-        s: 0.85 + hash01(seed + "rs" + i) * 0.4,
-        kind: hash01(seed + "rk" + i) > 0.6 ? "round" : "pine",
-        id: "R" + i,
+        x: -HW - 2.2 + col * 0.95 + (hash01(seed + "wx" + i) - 0.5) * 0.6,
+        z: -HD + 2.5 + row * 1.5 + (hash01(seed + "wz" + i) - 0.5) * 0.7,
+        s: 0.9 + hash01(seed + "ws" + i) * 0.45,
+        kind: "pine",
+        id: "W" + i,
       });
     }
-    // Back row
-    for (let i = 0; i < 14; i++) {
+    // East cluster
+    for (let i = 0; i < 9; i++) {
+      const row = Math.floor(i / 3);
+      const col = i % 3;
       out.push({
-        x: -8 + i * 1.3 + (hash01(seed + "bx" + i) - 0.5) * 0.5,
-        z: -9.5 + (hash01(seed + "bz" + i) - 0.5) * 0.8,
-        s: 1.0 + hash01(seed + "bs" + i) * 0.35,
-        kind: "pine",
-        id: "B" + i,
+        x: HW + 0.6 + col * 0.95 + (hash01(seed + "ex" + i) - 0.5) * 0.6,
+        z: -HD + 3 + row * 1.6 + (hash01(seed + "ez" + i) - 0.5) * 0.7,
+        s: 0.85 + hash01(seed + "es" + i) * 0.4,
+        kind: hash01(seed + "ek" + i) > 0.6 ? "round" : "pine",
+        id: "E" + i,
+      });
+    }
+    // South scattered accents (sparse, don't block camera)
+    for (let i = 0; i < 6; i++) {
+      out.push({
+        x: -HW + 1 + i * ((WORLD_W - 2) / 5) + (hash01(seed + "sx" + i) - 0.5) * 1.4,
+        z: HD + 1.6 + (hash01(seed + "sz" + i) - 0.5) * 0.8,
+        s: 0.6 + hash01(seed + "ss" + i) * 0.3,
+        kind: hash01(seed + "sk" + i) > 0.5 ? "round" : "pine",
+        id: "S" + i,
+      });
+    }
+    return out;
+  }, [seed, HW, HD]);
+
+  const flowers = useMemo(() => {
+    const out: { x: number; z: number; id: string }[] = [];
+    for (let i = 0; i < 30; i++) {
+      out.push({
+        x: (hash01(seed + "fx" + i) - 0.5) * (WORLD_W - 2),
+        z: (hash01(seed + "fz" + i) - 0.5) * (WORLD_D - 1),
+        id: "f" + i,
       });
     }
     return out;
   }, [seed]);
 
-  const flowers = useMemo(() => {
+  const rocks = useMemo(() => {
     const out: { x: number; z: number; id: string }[] = [];
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 9; i++) {
       out.push({
-        x: (hash01(seed + "fx" + i) - 0.5) * 18,
-        z: (hash01(seed + "fz" + i) - 0.5) * 14,
-        id: "f" + i,
+        x: (hash01(seed + "rx" + i) - 0.5) * (WORLD_W + 3),
+        z: (hash01(seed + "rz" + i) - 0.5) * (WORLD_D + 3),
+        id: "r" + i,
+      });
+    }
+    return out;
+  }, [seed]);
+
+  const bushes = useMemo(() => {
+    const out: { x: number; z: number; id: string }[] = [];
+    for (let i = 0; i < 12; i++) {
+      out.push({
+        x: (hash01(seed + "bx" + i) - 0.5) * (WORLD_W + 4),
+        z: (hash01(seed + "bz" + i) - 0.5) * (WORLD_D + 4),
+        id: "b" + i,
       });
     }
     return out;
@@ -704,6 +1156,12 @@ export function ForestBelt({ seed }: { seed: string }) {
       )}
       {flowers.map((f) => (
         <ACFlowers key={f.id} position={[f.x, 0, f.z]} seed={f.id} />
+      ))}
+      {rocks.map((r) => (
+        <Rock key={r.id} position={[r.x, 0, r.z]} seed={r.id} />
+      ))}
+      {bushes.map((b) => (
+        <Bush key={b.id} position={[b.x, 0, b.z]} seed={b.id} />
       ))}
     </group>
   );

@@ -3,6 +3,14 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { Html, SoftShadows } from "@react-three/drei";
 import {
+  EffectComposer,
+  Bloom,
+  Vignette,
+  SMAA,
+  HueSaturation,
+  BrightnessContrast,
+} from "@react-three/postprocessing";
+import {
   type Edge,
   type PlacedStop,
   ENTER_DIST,
@@ -18,9 +26,15 @@ import {
   ACCottage,
   ACHouse,
   ACMystery,
+  Butterflies,
+  Clouds,
   DirtPath,
   ForestBelt,
   GrassField,
+  Island,
+  LampPost,
+  Ocean,
+  SkyDome,
 } from "./props";
 
 type Keys = Record<string, boolean>;
@@ -37,18 +51,18 @@ interface Props {
   nearIndex: number | null;
 }
 
-/** Default AC-ish spherical camera: slightly south, elevated. */
+/** Default spherical camera: slightly south, elevated — diorama view. */
 const CAM_PHI_DEFAULT = 0.92; // polar angle from Y-up (0 = top-down)
 const CAM_THETA_DEFAULT = 0.04; // azimuth
-const CAM_RADIUS_DEFAULT = 14;
+const CAM_RADIUS_DEFAULT = 14.5;
 const CAM_RADIUS_MIN = 6;
-const CAM_RADIUS_MAX = 28;
+const CAM_RADIUS_MAX = 26;
 const CAM_PHI_MIN = 0.35; // almost top-down
-const CAM_PHI_MAX = 1.25; // more side-on, still above horizon
+const CAM_PHI_MAX = 1.22; // more side-on, still above horizon
 
 /**
  * Follows the player while allowing orbit rotate + scroll zoom.
- * - Left/right drag: orbit
+ * - Drag: orbit
  * - Scroll / pinch: zoom
  * - Click without drag: still walks (handled by GroundClick via dragGuard)
  */
@@ -77,7 +91,6 @@ function CameraRig({
     el.style.touchAction = "none";
 
     const onDown = (e: PointerEvent) => {
-      // Left or right button starts orbit; middle also fine
       if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
       dragging.current = true;
       moved.current = false;
@@ -112,7 +125,6 @@ function CameraRig({
 
     const onUp = (e: PointerEvent) => {
       dragging.current = false;
-      // Keep dragGuard true until next frame's click handler runs, then clear
       if (moved.current) {
         // leave guard set briefly so click is ignored
         window.setTimeout(() => {
@@ -132,7 +144,6 @@ function CameraRig({
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const delta = e.deltaY;
-      // Normalize trackpad vs mouse wheel a bit
       const step = Math.sign(delta) * Math.min(Math.abs(delta) * 0.02, 1.8);
       spherical.current.radius = THREE.MathUtils.clamp(
         spherical.current.radius + step,
@@ -141,7 +152,7 @@ function CameraRig({
       );
     };
 
-    const onContext = (e: Event) => e.preventDefault(); // allow right-drag without menu
+    const onContext = (e: Event) => e.preventDefault();
 
     const onKeyDown = (e: KeyboardEvent) => {
       keysHeld.current[e.key] = true;
@@ -172,7 +183,6 @@ function CameraRig({
   }, [gl, dragGuard]);
 
   useFrame((_, dt) => {
-    // Keyboard orbit / zoom helpers
     const k = keysHeld.current;
     const rotSpeed = 1.4 * dt;
     const zoomSpeed = 8 * dt;
@@ -197,7 +207,6 @@ function CameraRig({
     smooth.current.lerp(goal, 1 - Math.exp(-dt * 3.5));
 
     const { theta, phi, radius } = spherical.current;
-    // Spherical → Cartesian offset (Y-up)
     const sinPhi = Math.sin(phi);
     const offset = new THREE.Vector3(
       radius * sinPhi * Math.sin(theta),
@@ -257,6 +266,15 @@ function StopLandmark({
     stop.kind === "world" &&
     (stop.node.children.length > 0 || stop.node.count > 3);
   const scale = isCastle ? 1.18 : 1;
+  const ringRef = useRef<THREE.Mesh>(null);
+
+  useFrame((state) => {
+    if (ringRef.current) {
+      const t = state.clock.elapsedTime;
+      const s = 1 + Math.sin(t * 3.2) * 0.05;
+      ringRef.current.scale.set(s, s, 1);
+    }
+  });
 
   return (
     <group
@@ -285,25 +303,29 @@ function StopLandmark({
       {stop.kind === "ungrouped" && <ACMystery position={[0, 0, 0]} />}
 
       {near && (
-        <mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[0.75, 1.05, 40]} />
+        <mesh
+          ref={ringRef}
+          position={[0, 0.05, 0]}
+          rotation={[-Math.PI / 2, 0, 0]}
+        >
+          <ringGeometry args={[0.8, 1.05, 40]} />
           <meshStandardMaterial
-            color="#FFE566"
-            emissive="#FFE566"
-            emissiveIntensity={0.55}
+            color="#6ee7b7"
+            emissive="#6ee7b7"
+            emissiveIntensity={1.1}
             transparent
-            opacity={0.9}
-            roughness={0.45}
+            opacity={0.85}
+            roughness={0.4}
           />
         </mesh>
       )}
 
+      {/* Fixed screen-size label — game POI style, never balloons up close */}
       <Html
-        position={[0, stop.kind === "world" ? 2.35 : 1.3, 0]}
+        position={[0, stop.kind === "world" ? 2.55 : 1.35, 0]}
         center
-        distanceFactor={12}
         style={{ pointerEvents: "none", userSelect: "none" }}
-        zIndexRange={[20, 0]}
+        zIndexRange={[4, 0]}
       >
         <div className="ac-label">
           <div className="ac-label-title">{label}</div>
@@ -314,7 +336,7 @@ function StopLandmark({
           )}
           {near && (
             <div className="ac-label-hint">
-              {stop.kind === "world" ? "ENTER ↵" : "OPEN ↵"}
+              {stop.kind === "world" ? "enter ↵" : "open ↵"}
             </div>
           )}
         </div>
@@ -374,13 +396,13 @@ function LivePlayer({
       walking.current = true;
       group.current.position.x = THREE.MathUtils.clamp(
         group.current.position.x + dx,
-        -WORLD_W / 2 + 1.2,
-        WORLD_W / 2 - 1.2
+        -WORLD_W / 2 - 1.5,
+        WORLD_W / 2 + 1.5
       );
       group.current.position.z = THREE.MathUtils.clamp(
         group.current.position.z + dz,
-        -WORLD_D / 2 + 1.2,
-        WORLD_D / 2 - 1.2
+        -WORLD_D / 2 - 1.5,
+        WORLD_D / 2 + 1.5
       );
     } else {
       walking.current = false;
@@ -402,6 +424,10 @@ function LivePlayer({
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       body.current.rotation.y = cur + diff * Math.min(1, dt * 14);
+      // subtle lean into the walk
+      body.current.rotation.x = walking.current
+        ? Math.sin(bob.current) * 0.045
+        : 0;
     }
 
     let best: number | null = null;
@@ -425,56 +451,79 @@ function LivePlayer({
     if (group.current) {
       group.current.position.set(playerRef.current.x, 0, playerRef.current.z);
     }
+    // New world, new stops — forget the old near-index or a same-index stop
+    // in the next world would never re-announce itself.
+    nearRef.current = null;
   }, [placed, playerRef]);
 
-  // Player is intentionally large vs world scale so it reads at AC camera distance
-  const S = 2.15;
+  // Slightly larger than world scale so it reads at diorama camera distance
+  const S = 1.6;
   return (
-    <group ref={group} position={[playerRef.current.x, 0, playerRef.current.z]} scale={S}>
+    <group
+      ref={group}
+      position={[playerRef.current.x, 0, playerRef.current.z]}
+      scale={S}
+    >
       <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[0.32, 16]} />
-        <meshStandardMaterial color="#000" transparent opacity={0.25} roughness={1} />
+        <circleGeometry args={[0.3, 16]} />
+        <meshStandardMaterial color="#000" transparent opacity={0.22} roughness={1} />
       </mesh>
       <group ref={body}>
+        {/* feet */}
         <mesh position={[-0.1, 0.1, 0.08]} castShadow>
-          <sphereGeometry args={[0.11, 10, 8]} />
+          <sphereGeometry args={[0.1, 10, 8]} />
           <meshStandardMaterial color={AC.playerFeet} roughness={0.85} />
         </mesh>
         <mesh position={[0.1, 0.1, 0.08]} castShadow>
-          <sphereGeometry args={[0.11, 10, 8]} />
+          <sphereGeometry args={[0.1, 10, 8]} />
           <meshStandardMaterial color={AC.playerFeet} roughness={0.85} />
         </mesh>
+        {/* body */}
         <mesh position={[0, 0.38, 0]} castShadow>
           <capsuleGeometry args={[0.22, 0.28, 6, 14]} />
           <meshStandardMaterial color={AC.playerBody} roughness={0.82} />
         </mesh>
-        <mesh position={[0, 0.72, 0]} castShadow>
+        {/* scarf */}
+        <mesh position={[0, 0.56, 0]} rotation={[0, 0, 0]}>
+          <torusGeometry args={[0.16, 0.05, 8, 14]} />
+          <meshStandardMaterial color="#e0b048" roughness={0.85} />
+        </mesh>
+        {/* head */}
+        <mesh position={[0, 0.74, 0]} castShadow>
           <sphereGeometry args={[0.24, 16, 14]} />
           <meshStandardMaterial color={AC.playerBody} roughness={0.82} />
         </mesh>
-        <mesh position={[0, 0.7, 0.16]}>
+        {/* face plate */}
+        <mesh position={[0, 0.72, 0.16]}>
           <sphereGeometry args={[0.14, 12, 10]} />
           <meshStandardMaterial color={AC.playerFace} roughness={0.85} />
         </mesh>
-        <mesh position={[-0.06, 0.72, 0.26]}>
-          <sphereGeometry args={[0.035, 8, 8]} />
+        {/* eyes */}
+        <mesh position={[-0.06, 0.74, 0.26]}>
+          <sphereGeometry args={[0.032, 8, 8]} />
           <meshStandardMaterial color="#1A1A1A" />
         </mesh>
-        <mesh position={[0.06, 0.72, 0.26]}>
-          <sphereGeometry args={[0.035, 8, 8]} />
+        <mesh position={[0.06, 0.74, 0.26]}>
+          <sphereGeometry args={[0.032, 8, 8]} />
           <meshStandardMaterial color="#1A1A1A" />
         </mesh>
-        <mesh position={[-0.18, 0.84, 0]} castShadow>
-          <sphereGeometry args={[0.1, 10, 8]} />
+        {/* hood bumps */}
+        <mesh position={[-0.18, 0.88, 0]} castShadow>
+          <sphereGeometry args={[0.09, 10, 8]} />
           <meshStandardMaterial color={AC.playerDark} roughness={0.85} />
         </mesh>
-        <mesh position={[0.18, 0.84, 0]} castShadow>
-          <sphereGeometry args={[0.1, 10, 8]} />
+        <mesh position={[0.18, 0.88, 0]} castShadow>
+          <sphereGeometry args={[0.09, 10, 8]} />
           <meshStandardMaterial color={AC.playerDark} roughness={0.85} />
         </mesh>
-        <mesh position={[0, 0.4, -0.18]} castShadow>
-          <boxGeometry args={[0.26, 0.26, 0.12]} />
+        {/* backpack */}
+        <mesh position={[0, 0.42, -0.19]} castShadow>
+          <boxGeometry args={[0.26, 0.28, 0.12]} />
           <meshStandardMaterial color="#5A3A20" roughness={0.9} />
+        </mesh>
+        <mesh position={[0, 0.55, -0.22]}>
+          <boxGeometry args={[0.18, 0.06, 0.08]} />
+          <meshStandardMaterial color="#7a5230" roughness={0.9} />
         </mesh>
       </group>
     </group>
@@ -500,41 +549,66 @@ export default function OverworldScene({
         const A = placed[e.a];
         const B = placed[e.b];
         if (!A || !B) return null;
-        return pathSamples(A.x, A.z, B.x, B.z, `${A.stop.id}-${B.stop.id}`, 22);
+        return pathSamples(A.x, A.z, B.x, B.z, `${A.stop.id}-${B.stop.id}`, 26);
       })
       .filter(Boolean) as { x: number; z: number }[][];
   }, [edges, placed]);
 
+  // One lamp per path, ~38% along, nudged off the trail.
+  const lamps = useMemo(() => {
+    return paths
+      .filter((_, i) => i % 2 === 0)
+      .map((pts) => {
+        const i = Math.floor(pts.length * 0.38);
+        const p = pts[i];
+        const q = pts[Math.min(i + 1, pts.length - 1)];
+        let nx = -(q.z - p.z);
+        let nz = q.x - p.x;
+        const len = Math.hypot(nx, nz) || 1;
+        nx /= len;
+        nz /= len;
+        return { x: p.x + nx * 1.05, z: p.z + nz * 1.05 };
+      });
+  }, [paths]);
+
   return (
     <>
-      <color attach="background" args={[AC.sky]} />
-      <fog attach="fog" args={[AC.fog, 20, 40]} />
+      <fog attach="fog" args={[AC.fog, 26, 70]} />
 
-      <ambientLight intensity={0.7} color="#fff6ea" />
-      <hemisphereLight args={["#c5e4f5", "#6FA04E", 0.5]} />
+      <ambientLight intensity={0.62} color="#fff4e4" />
+      <hemisphereLight args={["#bfe0f5", "#7aa85e", 0.55]} />
       <directionalLight
         castShadow
-        position={[9, 17, 7]}
-        intensity={1.2}
-        color="#fff1d6"
+        position={[10, 18, 8]}
+        intensity={1.45}
+        color="#ffedcc"
         shadow-mapSize={[2048, 2048]}
-        shadow-camera-far={50}
-        shadow-camera-left={-18}
-        shadow-camera-right={18}
-        shadow-camera-top={18}
-        shadow-camera-bottom={-18}
+        shadow-camera-far={60}
+        shadow-camera-left={-22}
+        shadow-camera-right={22}
+        shadow-camera-top={22}
+        shadow-camera-bottom={-22}
         shadow-bias={-0.00025}
       />
-      <directionalLight position={[-7, 9, -5]} intensity={0.28} color="#a8c8ff" />
+      <directionalLight position={[-8, 10, -6]} intensity={0.3} color="#a8c8ff" />
 
-      <SoftShadows size={14} samples={14} focus={0.55} />
+      <SoftShadows size={16} samples={14} focus={0.6} />
 
       <CameraRig target={playerRef} dragGuard={dragGuard} />
+
+      <SkyDome />
+      <Clouds />
+      <Ocean />
+      <Island />
       <GrassField />
       <ForestBelt seed={seed} />
+      <Butterflies seed={seed} />
 
       {paths.map((pts, i) => (
-        <DirtPath key={i} points={pts} width={1.25} />
+        <DirtPath key={i} points={pts} width={1.2} />
+      ))}
+      {lamps.map((l, i) => (
+        <LampPost key={i} position={[l.x, 0, l.z]} />
       ))}
 
       {placed.map((p) => (
@@ -555,6 +629,19 @@ export default function OverworldScene({
       />
 
       <GroundClick autoWalkRef={autoWalkRef} dragGuard={dragGuard} />
+
+      <EffectComposer multisampling={0}>
+        <SMAA />
+        <Bloom
+          intensity={0.35}
+          luminanceThreshold={0.85}
+          luminanceSmoothing={0.25}
+          mipmapBlur
+        />
+        <BrightnessContrast brightness={0.015} contrast={0.055} />
+        <HueSaturation saturation={0.12} />
+        <Vignette eskil={false} offset={0.14} darkness={0.3} />
+      </EffectComposer>
     </>
   );
 }
