@@ -233,10 +233,12 @@ export default function WorldMap({
           gl={{
             antialias: true,
             toneMapping: THREE.ACESFilmicToneMapping,
-            toneMappingExposure: 1.05,
+            toneMappingExposure: 1.12,
+            // Enables reliable screenshot readback for verification.
+            preserveDrawingBuffer: true,
           }}
           onCreated={({ gl }) => {
-            gl.setClearColor("#8ec4e8");
+            gl.setClearColor("#7eb8e0");
             gl.shadowMap.enabled = true;
             gl.shadowMap.type = THREE.PCFSoftShadowMap;
           }}

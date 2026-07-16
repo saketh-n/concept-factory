@@ -509,10 +509,11 @@ export default function OverworldScene({
   }, [paths]);
 
   // Ground-cover punch-outs so grass/boulders/red-grass never spawn on top
-  // of stops, dirt paths, or lamp posts.
+  // of stops, dirt paths, or lamp posts. Stops get a wider pad so large
+  // field stones never bury the player near a landmark.
   const exclusions = useMemo<Exclusion[]>(() => {
     const out: Exclusion[] = [];
-    for (const p of placed) out.push({ x: p.x, z: p.z, r: 2.0 });
+    for (const p of placed) out.push({ x: p.x, z: p.z, r: 2.6 });
     for (const pts of paths) {
       for (let i = 0; i < pts.length; i += 3) {
         out.push({ x: pts[i].x, z: pts[i].z, r: 0.95 });
@@ -524,26 +525,31 @@ export default function OverworldScene({
 
   return (
     <>
-      <fog attach="fog" args={["#d5e6ee", 30, 85]} />
+      {/* Soft atmospheric haze — keeps distant hills/trees reading as depth */}
+      <fog attach="fog" args={["#c8e0ee", 28, 78]} />
 
-      <ambientLight intensity={0.55} color="#fff3de" />
-      <hemisphereLight args={["#cfe8ff", "#86b45e", 0.6]} />
+      <ambientLight intensity={0.48} color="#fff6e8" />
+      <hemisphereLight args={["#b8d8f5", "#6aab48", 0.72]} />
+      {/* Golden key sun — BOTW meadow warmth */}
       <directionalLight
         castShadow
-        position={[10, 18, 8]}
-        intensity={1.6}
-        color="#ffe8c0"
+        position={[14, 22, 10]}
+        intensity={1.85}
+        color="#ffe2a8"
         shadow-mapSize={[2048, 2048]}
         shadow-camera-far={60}
-        shadow-camera-left={-22}
-        shadow-camera-right={22}
-        shadow-camera-top={22}
-        shadow-camera-bottom={-22}
+        shadow-camera-left={-24}
+        shadow-camera-right={24}
+        shadow-camera-top={24}
+        shadow-camera-bottom={-24}
         shadow-bias={-0.00025}
       />
-      <directionalLight position={[-8, 10, -6]} intensity={0.3} color="#a8c8ff" />
+      {/* Cool sky fill */}
+      <directionalLight position={[-10, 12, -8]} intensity={0.38} color="#a0c4ff" />
+      {/* Soft rim from behind the camera */}
+      <directionalLight position={[2, 6, 14]} intensity={0.22} color="#fff0d0" />
 
-      <SoftShadows size={16} samples={14} focus={0.6} />
+      <SoftShadows size={18} samples={16} focus={0.55} />
 
       <CameraRig target={playerRef} dragGuard={dragGuard} />
 
@@ -589,14 +595,14 @@ export default function OverworldScene({
       <EffectComposer multisampling={0}>
         <SMAA />
         <Bloom
-          intensity={0.5}
-          luminanceThreshold={0.8}
-          luminanceSmoothing={0.25}
+          intensity={0.42}
+          luminanceThreshold={0.82}
+          luminanceSmoothing={0.28}
           mipmapBlur
         />
-        <BrightnessContrast brightness={0.015} contrast={0.055} />
-        <HueSaturation saturation={0.18} />
-        <Vignette eskil={false} offset={0.14} darkness={0.3} />
+        <BrightnessContrast brightness={0.02} contrast={0.08} />
+        <HueSaturation saturation={0.22} />
+        <Vignette eskil={false} offset={0.12} darkness={0.28} />
       </EffectComposer>
     </>
   );

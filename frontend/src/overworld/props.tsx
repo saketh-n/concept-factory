@@ -3,11 +3,11 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { hash01, WORLD_W, WORLD_D } from "./layout";
 
-/* ── Palette — warm, saturated, game-grade ─────────────────────────── */
+/* ── Palette — BOTW-inspired meadow (vivid greens, soft stone) ─────── */
 export const AC = {
-  grass: "#7db95c",
-  grassDark: "#639a48",
-  grassLight: "#94cc70",
+  grass: "#6db84a",
+  grassDark: "#4f9636",
+  grassLight: "#8fd45a",
   cliff: "#8a6a48",
   cliffDark: "#6e5238",
   sand: "#e8d5a4",
@@ -16,11 +16,11 @@ export const AC = {
   foam: "#eaf6ff",
   dirtPath: "#c9a26e",
   dirtEdge: "#a67f4e",
-  canopyDeep: "#3f9a44",
-  canopyMid: "#58bb50",
-  canopyLite: "#7cd45e",
-  canopyTip: "#9ce873",
-  trunk: "#6b4423",
+  canopyDeep: "#2f8a38",
+  canopyMid: "#4aad42",
+  canopyLite: "#6bc84e",
+  canopyTip: "#8edc5c",
+  trunk: "#5c3a1c",
   log: "#c8a076",
   logDark: "#a5805a",
   logLite: "#e0c8a0",
@@ -31,8 +31,8 @@ export const AC = {
   windowFrame: "#7a5c1e",
   door: "#7a4a28",
   mailbox: "#e07040",
-  sky: "#8ec4e8",
-  fog: "#b9dcf0",
+  sky: "#7eb8e0",
+  fog: "#c8e4f0",
   playerBody: "#3d5fbf",
   playerDark: "#2a4490",
   playerFeet: "#e05050",
@@ -41,7 +41,9 @@ export const AC = {
   flowerP: "#f090b8",
   flowerB: "#8fb8f0",
   flowerR: "#ef6a5a",
-  stone: "#a8a294",
+  stone: "#8a9490",
+  stoneLite: "#b8c4c0",
+  stoneDark: "#6a7470",
 } as const;
 
 /** Soft matte material helper — surfaces are matte, slightly toon. */
@@ -87,8 +89,9 @@ export function SkyDome() {
       depthWrite: false,
       fog: false,
       uniforms: {
-        top: { value: new THREE.Color("#5ea7dd") },
-        horizon: { value: new THREE.Color("#cfe9f7") },
+        top: { value: new THREE.Color("#4a9ad4") },
+        mid: { value: new THREE.Color("#8ec4e8") },
+        horizon: { value: new THREE.Color("#e8f4fc") },
       },
       vertexShader: /* glsl */ `
         varying vec3 vPos;
@@ -99,11 +102,14 @@ export function SkyDome() {
       `,
       fragmentShader: /* glsl */ `
         uniform vec3 top;
+        uniform vec3 mid;
         uniform vec3 horizon;
         varying vec3 vPos;
         void main() {
-          float h = clamp(normalize(vPos).y * 1.6 + 0.18, 0.0, 1.0);
-          gl_FragColor = vec4(mix(horizon, top, pow(h, 0.8)), 1.0);
+          float h = clamp(normalize(vPos).y * 1.45 + 0.12, 0.0, 1.0);
+          vec3 col = mix(horizon, mid, smoothstep(0.0, 0.45, h));
+          col = mix(col, top, smoothstep(0.35, 1.0, h));
+          gl_FragColor = vec4(col, 1.0);
         }
       `,
     });
@@ -358,19 +364,24 @@ export function Vista() {
           scale={[1, 0.28, 1]}
         >
           <sphereGeometry args={[h.radius, 16, 12]} />
-          <meshStandardMaterial color="#6fb254" roughness={0.95} />
+          <meshStandardMaterial color="#5aa640" roughness={0.95} />
         </mesh>
       ))}
       {mountains.map((m) => (
         <group key={m.id} position={[m.x, 0, m.z]}>
           <mesh position={[0, m.height * 0.42, 0]}>
             <coneGeometry args={[m.radius, m.height, 7]} />
-            <meshStandardMaterial color="#8aa8bd" roughness={1} flatShading />
+            <meshStandardMaterial color="#7a96a8" roughness={1} flatShading />
+          </mesh>
+          {/* mossy lower slope for depth */}
+          <mesh position={[0, m.height * 0.12, m.radius * 0.15]} scale={[1.05, 0.35, 1.05]}>
+            <coneGeometry args={[m.radius * 0.95, m.height * 0.35, 7]} />
+            <meshStandardMaterial color="#5a9a48" roughness={0.98} flatShading />
           </mesh>
           {tallestIds.has(m.id) && (
             <mesh position={[0, m.height * 0.42 + m.height * 0.42, 0]}>
               <coneGeometry args={[m.radius * 0.32, m.height * 0.32, 7]} />
-              <meshStandardMaterial color="#ffffff" roughness={0.9} flatShading />
+              <meshStandardMaterial color="#f4f8fc" roughness={0.9} flatShading />
             </mesh>
           )}
         </group>
@@ -381,43 +392,62 @@ export function Vista() {
 
 /* ── Island: cliff walls + sand beach + grass top ──────────────────── */
 function grassTexture(): THREE.Texture {
-  const size = 256;
+  const size = 512;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  // Brightened base — BOTW vibrant yellow-green rather than the older muted tone.
-  ctx.fillStyle = "#85c161";
+  // BOTW meadow base — saturated yellow-green ground under the blade field.
+  ctx.fillStyle = "#6fbc48";
   ctx.fillRect(0, 0, size, size);
-  // multi-scale mottling
-  for (let i = 0; i < 900; i++) {
+  // large soft patches (field variation)
+  for (let i = 0; i < 120; i++) {
+    const x = hash01("gpx" + i) * size;
+    const y = hash01("gpy" + i) * size;
+    const r = 18 + hash01("gpr" + i) * 48;
+    const l = hash01("gpl" + i);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    if (l > 0.55) {
+      g.addColorStop(0, "rgba(160,220,90,0.45)");
+      g.addColorStop(1, "rgba(160,220,90,0)");
+    } else {
+      g.addColorStop(0, "rgba(55,130,40,0.4)");
+      g.addColorStop(1, "rgba(55,130,40,0)");
+    }
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // mid-scale mottling
+  for (let i = 0; i < 1400; i++) {
     const x = hash01("gx" + i) * size;
     const y = hash01("gy" + i) * size;
-    const r = 1 + hash01("gr" + i) * 3.4;
+    const r = 1.5 + hash01("gr" + i) * 4.2;
     const l = hash01("gl" + i);
     ctx.fillStyle =
       l > 0.66
-        ? `rgba(178,220,132,${0.10 + l * 0.12})`
+        ? `rgba(190,235,110,${0.12 + l * 0.14})`
         : l > 0.33
-          ? `rgba(96,150,66,${0.10 + l * 0.10})`
-          : `rgba(70,120,52,${0.08 + l * 0.10})`;
+          ? `rgba(90,160,55,${0.12 + l * 0.12})`
+          : `rgba(48,110,38,${0.1 + l * 0.12})`;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   }
-  // fine speckle
-  for (let i = 0; i < 1600; i++) {
+  // fine blade-direction noise
+  for (let i = 0; i < 2800; i++) {
     const x = hash01("sx" + i) * size;
     const y = hash01("sy" + i) * size;
     ctx.fillStyle =
-      hash01("sl" + i) > 0.5 ? "rgba(200,235,150,0.16)" : "rgba(60,105,45,0.14)";
-    ctx.fillRect(x, y, 1.4, 1.4);
+      hash01("sl" + i) > 0.5
+        ? "rgba(210,245,140,0.18)"
+        : "rgba(40,95,32,0.16)";
+    ctx.fillRect(x, y, 1.6, 2.4);
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(9, 7);
+  tex.repeat.set(7, 5.5);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
+  tex.anisotropy = 8;
   return tex;
 }
 
@@ -464,14 +494,14 @@ export function Island() {
         {mat(AC.cliff, { roughness: 0.95 })}
       </mesh>
 
-      {/* grass cap */}
+      {/* grass cap — warm tint so ground reads as sunlit meadow under blades */}
       <mesh
         geometry={topGeo}
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, 0, 0]}
         receiveShadow
       >
-        <meshStandardMaterial map={grassTex} color="#d6f0b2" roughness={0.95} />
+        <meshStandardMaterial map={grassTex} color="#c8e888" roughness={0.92} />
       </mesh>
     </group>
   );
@@ -480,15 +510,16 @@ export function Island() {
 /* ── Soft grass variation patches + clover ─────────────────────────── */
 export function GrassField() {
   const patches = useMemo(() => {
-    const out: { x: number; z: number; s: number; c: string }[] = [];
-    for (let i = 0; i < 26; i++) {
+    const out: { x: number; z: number; s: number; c: string; o: number }[] = [];
+    for (let i = 0; i < 40; i++) {
       const h = hash01("gp" + i);
       const h2 = hash01("gp2" + i);
       out.push({
         x: (h - 0.5) * (WORLD_W + 4),
         z: (h2 - 0.5) * (WORLD_D + 4),
-        s: 1.4 + hash01("gs" + i) * 2.6,
-        c: h > 0.5 ? AC.grassLight : AC.grassDark,
+        s: 1.6 + hash01("gs" + i) * 3.2,
+        c: h > 0.62 ? AC.grassLight : h > 0.32 ? AC.grass : AC.grassDark,
+        o: 0.1 + hash01("go" + i) * 0.12,
       });
     }
     return out;
@@ -508,7 +539,7 @@ export function GrassField() {
             color={p.c}
             roughness={1}
             transparent
-            opacity={0.12}
+            opacity={p.o}
             depthWrite={false}
           />
         </mesh>
@@ -531,19 +562,23 @@ function isExcluded(x: number, z: number, exclusions: Exclusion[]): boolean {
 }
 
 /* ── Instanced wind-swept grass blades — BOTW field centerpiece ────── */
-const GRASS_COUNT = 26000;
-const GRASS_BLADE_WIDTH = 0.045;
-const GRASS_BLADE_HEIGHT = 0.34;
+/** Dense meadow: two height layers fill the playable island like the ref. */
+const GRASS_COUNT_TALL = 22000;
+const GRASS_COUNT_SHORT = 18000;
+const GRASS_BLADE_WIDTH = 0.052;
+const GRASS_BLADE_HEIGHT_TALL = 0.52;
+const GRASS_BLADE_HEIGHT_SHORT = 0.28;
 
 /** Tapered blade: base pinned at y=0, narrows to a point at the tip. */
 function bladeGeometry(width: number, height: number): THREE.BufferGeometry {
-  const geo = new THREE.PlaneGeometry(width, height, 1, 3);
+  const geo = new THREE.PlaneGeometry(width, height, 1, 4);
   geo.translate(0, height / 2, 0);
   const pos = geo.getAttribute("position") as THREE.BufferAttribute;
   const heightFrac = new Float32Array(pos.count);
   for (let i = 0; i < pos.count; i++) {
     const frac = THREE.MathUtils.clamp(pos.getY(i) / height, 0, 1);
-    pos.setX(i, pos.getX(i) * (1 - frac));
+    // Keep a little width near the tip so blades read thicker (BOTW look).
+    pos.setX(i, pos.getX(i) * (1 - frac * 0.92));
     heightFrac[i] = frac;
   }
   pos.needsUpdate = true;
@@ -552,12 +587,26 @@ function bladeGeometry(width: number, height: number): THREE.BufferGeometry {
   return geo;
 }
 
-function grassMaterial(): THREE.ShaderMaterial {
+function grassMaterial(opts?: {
+  root?: [number, number, number];
+  mid?: [number, number, number];
+  tip?: [number, number, number];
+  windAmp?: number;
+}): THREE.ShaderMaterial {
+  // Linearized sRGB meadow gradient — deep root → vivid mid → sunlit tip.
+  const root = opts?.root ?? [0.18, 0.42, 0.12];
+  const mid = opts?.mid ?? [0.38, 0.72, 0.18];
+  const tip = opts?.tip ?? [0.72, 0.92, 0.32];
+  const windAmp = opts?.windAmp ?? 0.22;
   return new THREE.ShaderMaterial({
     side: THREE.DoubleSide,
     fog: true,
     uniforms: {
       uTime: { value: 0 },
+      uWindAmp: { value: windAmp },
+      uRoot: { value: new THREE.Vector3(...root.map((c) => Math.pow(c, 2.2))) },
+      uMid: { value: new THREE.Vector3(...mid.map((c) => Math.pow(c, 2.2))) },
+      uTip: { value: new THREE.Vector3(...tip.map((c) => Math.pow(c, 2.2))) },
       fogColor: { value: new THREE.Color() },
       fogNear: { value: 1 },
       fogFar: { value: 1000 },
@@ -566,6 +615,7 @@ function grassMaterial(): THREE.ShaderMaterial {
       attribute float heightFrac;
       attribute float iRandom;
       uniform float uTime;
+      uniform float uWindAmp;
       varying float vHeightFrac;
       varying float vRandom;
       varying float vFacing;
@@ -576,9 +626,12 @@ function grassMaterial(): THREE.ShaderMaterial {
 
         vec4 worldPos = instanceMatrix * vec4(position, 1.0);
         float bend = heightFrac * heightFrac;
-        float sway = sin(uTime * 1.6 + worldPos.x * 0.9 + worldPos.z * 0.7) * 0.18 * bend;
+        float phase = uTime * 1.55 + worldPos.x * 0.85 + worldPos.z * 0.65 + iRandom * 6.28;
+        float gust = sin(uTime * 0.45 + worldPos.x * 0.15 + worldPos.z * 0.12) * 0.35 + 0.65;
+        float sway = sin(phase) * uWindAmp * bend * gust;
+        float sway2 = cos(phase * 0.7 + 1.3) * uWindAmp * 0.45 * bend * gust;
         worldPos.x += sway;
-        worldPos.z += sway * 0.6;
+        worldPos.z += sway2;
 
         vec3 worldNormal = normalize(mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
         vec3 viewDir = normalize(cameraPosition - worldPos.xyz);
@@ -593,20 +646,23 @@ function grassMaterial(): THREE.ShaderMaterial {
       varying float vHeightFrac;
       varying float vRandom;
       varying float vFacing;
+      uniform vec3 uRoot;
+      uniform vec3 uMid;
+      uniform vec3 uTip;
       #include <fog_pars_fragment>
       void main() {
-        // sRGB constants linearized so the colorspace conversion below is correct
-        vec3 rootColor = pow(vec3(0.247, 0.478, 0.2), vec3(2.2));
-        vec3 tipColor = pow(vec3(0.663, 0.851, 0.306), vec3(2.2));
-        float t = pow(clamp(vHeightFrac, 0.0, 1.0), 0.75);
-        vec3 color = mix(rootColor, tipColor, t);
+        float t = clamp(vHeightFrac, 0.0, 1.0);
+        vec3 color = mix(uRoot, uMid, smoothstep(0.0, 0.55, t));
+        color = mix(color, uTip, smoothstep(0.4, 1.0, t));
 
-        // ±7% per-instance hue/brightness jitter
-        color *= 1.0 + (vRandom - 0.5) * 0.14;
+        // Per-blade brightness / saturation jitter for a natural field
+        color *= 1.0 + (vRandom - 0.5) * 0.22;
+        // Occasional slightly yellower blades
+        color.r += (vRandom - 0.4) * 0.04 * t;
+        color.g += (vRandom - 0.5) * 0.02;
 
-        // subtle darkening for blades facing away from the camera
-        float facingDark = smoothstep(-1.0, 0.2, vFacing);
-        color *= mix(0.82, 1.0, facingDark);
+        float facingDark = smoothstep(-1.0, 0.35, vFacing);
+        color *= mix(0.78, 1.05, facingDark);
 
         gl_FragColor = vec4(color, 1.0);
         #include <tonemapping_fragment>
@@ -617,6 +673,60 @@ function grassMaterial(): THREE.ShaderMaterial {
   });
 }
 
+function buildGrassMesh(
+  count: number,
+  height: number,
+  width: number,
+  exclusions: Exclusion[],
+  seed: string,
+  material: THREE.ShaderMaterial,
+  scaleRange: [number, number]
+): THREE.InstancedMesh {
+  const geo = bladeGeometry(width, height);
+  const m = new THREE.InstancedMesh(geo, material, count);
+  const hw = WORLD_W / 2 + 3.4;
+  const hd = WORLD_D / 2 + 3.4;
+  const rnd = new Float32Array(count);
+  const mtx = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const s = new THREE.Vector3();
+  const p = new THREE.Vector3();
+  const eul = new THREE.Euler();
+
+  let placedCount = 0;
+  let i = 0;
+  const maxTries = count * 4;
+  while (placedCount < count && i < maxTries) {
+    const x = (hash01(seed + "gx" + i) - 0.5) * 2 * hw;
+    const z = (hash01(seed + "gz" + i) - 0.5) * 2 * hd;
+    i++;
+    if (isExcluded(x, z, exclusions)) continue;
+    const ry = hash01(seed + "gr" + i) * Math.PI * 2;
+    // Slight lean so the field isn't perfectly upright (reads denser).
+    const lean = (hash01(seed + "gl" + i) - 0.5) * 0.18;
+    const sc =
+      scaleRange[0] + hash01(seed + "gs" + i) * (scaleRange[1] - scaleRange[0]);
+    p.set(x, 0, z);
+    eul.set(lean, ry, lean * 0.4);
+    q.setFromEuler(eul);
+    s.set(1, sc, 1);
+    mtx.compose(p, q, s);
+    m.setMatrixAt(placedCount, mtx);
+    rnd[placedCount] = hash01(seed + "gh" + i);
+    placedCount++;
+  }
+  m.count = placedCount;
+  m.instanceMatrix.needsUpdate = true;
+  geo.setAttribute(
+    "iRandom",
+    new THREE.InstancedBufferAttribute(rnd.slice(0, placedCount), 1)
+  );
+  m.frustumCulled = false;
+  m.castShadow = false;
+  m.receiveShadow = false;
+  return m;
+}
+
 export function GrassBlades({
   exclusions,
   seed,
@@ -624,61 +734,62 @@ export function GrassBlades({
   exclusions: Exclusion[];
   seed: string;
 }) {
-  const mesh = useMemo(() => {
-    const geo = bladeGeometry(GRASS_BLADE_WIDTH, GRASS_BLADE_HEIGHT);
-    const material = grassMaterial();
-    const m = new THREE.InstancedMesh(geo, material, GRASS_COUNT);
-
-    const hw = WORLD_W / 2 + 3.4;
-    const hd = WORLD_D / 2 + 3.4;
-    const rnd = new Float32Array(GRASS_COUNT);
-    const mtx = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const s = new THREE.Vector3();
-    const p = new THREE.Vector3();
-    const axis = new THREE.Vector3(0, 1, 0);
-
-    let placedCount = 0;
-    let i = 0;
-    const maxTries = GRASS_COUNT * 3;
-    while (placedCount < GRASS_COUNT && i < maxTries) {
-      const x = (hash01(seed + "gx" + i) - 0.5) * 2 * hw;
-      const z = (hash01(seed + "gz" + i) - 0.5) * 2 * hd;
-      i++;
-      if (isExcluded(x, z, exclusions)) continue;
-      const ry = hash01(seed + "gr" + i) * Math.PI * 2;
-      const sc = 0.7 + hash01(seed + "gs" + i) * 0.8;
-      p.set(x, 0, z);
-      q.setFromAxisAngle(axis, ry);
-      s.set(1, sc, 1);
-      mtx.compose(p, q, s);
-      m.setMatrixAt(placedCount, mtx);
-      rnd[placedCount] = hash01(seed + "gh" + i);
-      placedCount++;
-    }
-    m.count = placedCount;
-    m.instanceMatrix.needsUpdate = true;
-    geo.setAttribute(
-      "iRandom",
-      new THREE.InstancedBufferAttribute(rnd.slice(0, placedCount), 1)
-    );
-    m.frustumCulled = false;
-    return m;
+  const { tall, short } = useMemo(() => {
+    const tallMat = grassMaterial({
+      root: [0.16, 0.4, 0.1],
+      mid: [0.36, 0.7, 0.16],
+      tip: [0.78, 0.94, 0.34],
+      windAmp: 0.26,
+    });
+    const shortMat = grassMaterial({
+      root: [0.2, 0.45, 0.12],
+      mid: [0.42, 0.74, 0.2],
+      tip: [0.62, 0.86, 0.28],
+      windAmp: 0.14,
+    });
+    return {
+      tall: buildGrassMesh(
+        GRASS_COUNT_TALL,
+        GRASS_BLADE_HEIGHT_TALL,
+        GRASS_BLADE_WIDTH,
+        exclusions,
+        seed + "T",
+        tallMat,
+        [0.75, 1.45]
+      ),
+      short: buildGrassMesh(
+        GRASS_COUNT_SHORT,
+        GRASS_BLADE_HEIGHT_SHORT,
+        GRASS_BLADE_WIDTH * 0.9,
+        exclusions,
+        seed + "S",
+        shortMat,
+        [0.65, 1.15]
+      ),
+    };
   }, [exclusions, seed]);
 
   useEffect(() => {
     return () => {
-      mesh.geometry.dispose();
-      (mesh.material as THREE.Material).dispose();
+      for (const mesh of [tall, short]) {
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+      }
     };
-  }, [mesh]);
+  }, [tall, short]);
 
   useFrame((state) => {
-    (mesh.material as THREE.ShaderMaterial).uniforms.uTime.value =
-      state.clock.elapsedTime;
+    const t = state.clock.elapsedTime;
+    (tall.material as THREE.ShaderMaterial).uniforms.uTime.value = t;
+    (short.material as THREE.ShaderMaterial).uniforms.uTime.value = t;
   });
 
-  return <primitive object={mesh} />;
+  return (
+    <group>
+      <primitive object={short} />
+      <primitive object={tall} />
+    </group>
+  );
 }
 
 /* ── Red plume grass — small clusters of thin crimson blades ───────── */
@@ -698,7 +809,8 @@ export function RedGrass({
       id: string;
       blades: { ox: number; oz: number; h: number; ry: number }[];
     }[] = [];
-    for (let ci = 0; ci < 14; ci++) {
+    // Tall crimson plume accents (BOTW wildflower-like color pops)
+    for (let ci = 0; ci < 22; ci++) {
       let x = (hash01(seed + "rgx" + ci) - 0.5) * 2 * hw;
       let z = (hash01(seed + "rgz" + ci) - 0.5) * 2 * hd;
       let tries = 0;
@@ -708,13 +820,13 @@ export function RedGrass({
         tries++;
       }
       if (isExcluded(x, z, exclusions)) continue;
-      const bladeCount = 3 + Math.floor(hash01(seed + "rgn" + ci) * 3); // 3..5
+      const bladeCount = 3 + Math.floor(hash01(seed + "rgn" + ci) * 4); // 3..6
       const blades = Array.from({ length: bladeCount }, (_, bi) => {
         const bSeed = seed + ci + "b" + bi;
         return {
-          ox: (hash01("ox" + bSeed) - 0.5) * 0.22,
-          oz: (hash01("oz" + bSeed) - 0.5) * 0.22,
-          h: 0.25 + hash01("h" + bSeed) * 0.2,
+          ox: (hash01("ox" + bSeed) - 0.5) * 0.28,
+          oz: (hash01("oz" + bSeed) - 0.5) * 0.28,
+          h: 0.28 + hash01("h" + bSeed) * 0.28,
           ry: hash01("ry" + bSeed) * Math.PI * 2,
         };
       });
@@ -739,7 +851,7 @@ export function RedGrass({
   );
 }
 
-/* ── Pine tree — layered rounded cones ─────────────────────────────── */
+/* ── Pine tree — layered rounded cones (richer BOTW greens) ────────── */
 export function ACTree({
   position,
   scale = 1,
@@ -749,8 +861,8 @@ export function ACTree({
   scale?: number;
   seed?: string;
 }) {
-  const s = 0.9 + hash01(seed) * 0.4;
-  const lean = (hash01(seed + "l") - 0.5) * 0.05;
+  const s = 0.95 + hash01(seed) * 0.45;
+  const lean = (hash01(seed + "l") - 0.5) * 0.06;
   const h = scale * s;
   return (
     <group
@@ -758,31 +870,31 @@ export function ACTree({
       scale={h}
       rotation={[0, hash01(seed + "r") * Math.PI * 2, lean]}
     >
-      <mesh position={[0, 0.28, 0]} castShadow>
-        <cylinderGeometry args={[0.07, 0.12, 0.55, 7]} />
+      <mesh position={[0, 0.32, 0]} castShadow>
+        <cylinderGeometry args={[0.07, 0.13, 0.62, 7]} />
         {mat(AC.trunk)}
       </mesh>
-      <mesh position={[0, 0.62, 0]} castShadow>
-        <coneGeometry args={[0.55, 0.6, 9]} />
+      <mesh position={[0, 0.68, 0]} castShadow>
+        <coneGeometry args={[0.62, 0.68, 9]} />
         {mat(AC.canopyDeep)}
       </mesh>
-      <mesh position={[0, 1.0, 0]} castShadow>
-        <coneGeometry args={[0.43, 0.58, 9]} />
+      <mesh position={[0, 1.1, 0]} castShadow>
+        <coneGeometry args={[0.48, 0.64, 9]} />
         {mat(AC.canopyMid)}
       </mesh>
-      <mesh position={[0, 1.35, 0]} castShadow>
-        <coneGeometry args={[0.3, 0.52, 9]} />
+      <mesh position={[0, 1.48, 0]} castShadow>
+        <coneGeometry args={[0.34, 0.56, 9]} />
         {mat(AC.canopyLite)}
       </mesh>
-      <mesh position={[0, 1.64, 0]} castShadow>
-        <coneGeometry args={[0.15, 0.36, 8]} />
+      <mesh position={[0, 1.8, 0]} castShadow>
+        <coneGeometry args={[0.17, 0.4, 8]} />
         {mat(AC.canopyTip)}
       </mesh>
     </group>
   );
 }
 
-/* ── Round deciduous tree ──────────────────────────────────────────── */
+/* ── Round deciduous tree — fuller multi-lobe canopy ───────────────── */
 export function ACRoundTree({
   position,
   scale = 1,
@@ -792,31 +904,34 @@ export function ACRoundTree({
   scale?: number;
   seed?: string;
 }) {
-  const s = scale * (0.9 + hash01(seed) * 0.25);
+  const s = scale * (0.95 + hash01(seed) * 0.3);
   return (
     <group position={position} scale={s}>
-      <mesh position={[0, 0.4, 0]} castShadow>
-        <cylinderGeometry args={[0.08, 0.11, 0.8, 7]} />
+      <mesh position={[0, 0.42, 0]} castShadow>
+        <cylinderGeometry args={[0.09, 0.12, 0.85, 7]} />
         {mat(AC.trunk)}
       </mesh>
-      {/* canopy spheres sized up ~15% for a fuller BOTW silhouette */}
-      <mesh position={[0, 1.12, 0]} castShadow>
-        <sphereGeometry args={[0.644, 12, 10]} />
+      <mesh position={[0, 1.2, 0]} castShadow>
+        <sphereGeometry args={[0.72, 12, 10]} />
         {mat(AC.canopyMid)}
       </mesh>
-      <mesh position={[0.26, 1.3, 0.14]} castShadow>
-        <sphereGeometry args={[0.391, 10, 8]} />
+      <mesh position={[0.32, 1.38, 0.18]} castShadow>
+        <sphereGeometry args={[0.44, 10, 8]} />
         {mat(AC.canopyLite)}
       </mesh>
-      <mesh position={[-0.22, 1.22, -0.16]} castShadow>
-        <sphereGeometry args={[0.345, 10, 8]} />
+      <mesh position={[-0.28, 1.3, -0.2]} castShadow>
+        <sphereGeometry args={[0.4, 10, 8]} />
         {mat(AC.canopyDeep)}
+      </mesh>
+      <mesh position={[0.08, 1.55, -0.22]} castShadow>
+        <sphereGeometry args={[0.32, 10, 8]} />
+        {mat(AC.canopyTip)}
       </mesh>
     </group>
   );
 }
 
-/* ── Rock ──────────────────────────────────────────────────────────── */
+/* ── Rock — weathered blue-gray with moss accent (BOTW field stone) ── */
 export function Rock({
   position,
   seed = "k",
@@ -826,22 +941,37 @@ export function Rock({
   seed?: string;
   scale?: number;
 }) {
-  const s = scale * (0.16 + hash01(seed) * 0.22);
+  const s = scale * (0.22 + hash01(seed) * 0.32);
+  const tone = hash01(seed + "t");
+  const color = tone > 0.55 ? AC.stoneLite : tone > 0.25 ? AC.stone : AC.stoneDark;
   return (
-    <mesh
-      position={[position[0], s * 0.55, position[2]]}
-      rotation={[
-        hash01(seed + "rx") * Math.PI,
-        hash01(seed + "ry") * Math.PI,
-        0,
-      ]}
-      scale={[s * 1.35, s, s]}
-      castShadow
-      receiveShadow
-    >
-      <dodecahedronGeometry args={[1, 0]} />
-      {mat(AC.stone, { roughness: 0.95 })}
-    </mesh>
+    <group position={position}>
+      <mesh
+        position={[0, s * 0.48, 0]}
+        rotation={[
+          hash01(seed + "rx") * 0.6,
+          hash01(seed + "ry") * Math.PI * 2,
+          hash01(seed + "rz") * 0.4,
+        ]}
+        scale={[s * 1.45, s * 0.85, s * 1.15]}
+        castShadow
+        receiveShadow
+      >
+        <dodecahedronGeometry args={[1, 0]} />
+        {mat(color, { roughness: 0.96 })}
+      </mesh>
+      {/* soft moss patch on the ground contact */}
+      <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <circleGeometry args={[s * 0.85, 12]} />
+        <meshStandardMaterial
+          color="#4d8f38"
+          roughness={1}
+          transparent
+          opacity={0.45}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
   );
 }
 
@@ -872,7 +1002,7 @@ export function Bush({
   );
 }
 
-/* ── Boulders — big stylized rock clusters near island edges/corners ─ */
+/* ── Boulders — large weathered field stones (BOTW meadow props) ───── */
 export function Boulders({
   exclusions,
   seed,
@@ -883,41 +1013,63 @@ export function Boulders({
   const clusters = useMemo(() => {
     const hw = WORLD_W / 2 + 1.2;
     const hd = WORLD_D / 2 + 1.2;
-    const anchors: { x: number; z: number }[] = [
-      { x: -hw, z: -hd },
-      { x: hw, z: -hd },
-      { x: -hw, z: hd },
-      { x: hw, z: hd },
-      { x: 0, z: -hd },
-      { x: 0, z: hd },
+    // Edge anchors + a few off-path mid-field stones (keep clear of stop pads)
+    const anchors: { x: number; z: number; edge: boolean }[] = [
+      { x: -hw, z: -hd, edge: true },
+      { x: hw, z: -hd, edge: true },
+      { x: -hw, z: hd, edge: true },
+      { x: hw, z: hd, edge: true },
+      { x: 0, z: -hd, edge: true },
+      { x: 0, z: hd, edge: true },
+      // Mid-field accents — offset toward edges so they don't bury the player
+      { x: -hw * 0.72, z: hd * 0.55, edge: false },
+      { x: hw * 0.75, z: -hd * 0.55, edge: false },
+      { x: -hw * 0.65, z: -hd * 0.55, edge: false },
     ];
-    return anchors.map((a, ci) => {
-      let x = a.x + (hash01(seed + "bx" + ci) - 0.5) * 3;
-      let z = a.z + (hash01(seed + "bz" + ci) - 0.5) * 3;
+    return anchors
+      .map((a, ci) => {
+      let x = a.x + (hash01(seed + "bx" + ci) - 0.5) * (a.edge ? 3 : 1.6);
+      let z = a.z + (hash01(seed + "bz" + ci) - 0.5) * (a.edge ? 3 : 1.6);
       let tries = 0;
-      while (isExcluded(x, z, exclusions) && tries < 8) {
-        x += (hash01(seed + "bnx" + ci + "_" + tries) - 0.5) * 2;
-        z += (hash01(seed + "bnz" + ci + "_" + tries) - 0.5) * 2;
+      while (isExcluded(x, z, exclusions) && tries < 12) {
+        x += (hash01(seed + "bnx" + ci + "_" + tries) - 0.5) * 2.4;
+        z += (hash01(seed + "bnz" + ci + "_" + tries) - 0.5) * 2.4;
         tries++;
       }
-      const rockCount = 2 + Math.floor(hash01(seed + "brc" + ci) * 2); // 2..3
+      if (isExcluded(x, z, exclusions)) return null;
+      const rockCount = 2 + Math.floor(hash01(seed + "brc" + ci) * (a.edge ? 3 : 2));
       const rocks = Array.from({ length: rockCount }, (_, ri) => {
         const rSeed = seed + ci + "br" + ri;
-        const radius = 0.7 + hash01(rSeed + "rad") * 1.3;
+        const radius =
+          (a.edge ? 0.85 : 0.55) + hash01(rSeed + "rad") * (a.edge ? 1.55 : 0.9);
         return {
-          ox: (hash01("ox" + rSeed) - 0.5) * radius * 1.1,
-          oz: (hash01("oz" + rSeed) - 0.5) * radius * 1.1,
+          ox: (hash01("ox" + rSeed) - 0.5) * radius * 1.15,
+          oz: (hash01("oz" + rSeed) - 0.5) * radius * 1.15,
           radius,
-          rx: hash01(rSeed + "rx") * Math.PI,
-          ry: hash01(rSeed + "ry") * Math.PI,
-          rz: hash01(rSeed + "rz") * Math.PI,
-          top: ri === rockCount - 1,
+          rx: hash01(rSeed + "rx") * 0.9,
+          ry: hash01(rSeed + "ry") * Math.PI * 2,
+          rz: hash01(rSeed + "rz") * 0.7,
+          tone: hash01(rSeed + "tone"),
         };
       });
-      const mossR =
-        1.05 + hash01(seed + "moss" + ci) * 0.5;
+      const mossR = 1.25 + hash01(seed + "moss" + ci) * 0.7;
       return { x, z, id: "bo" + ci, rocks, mossR };
-    });
+    })
+      .filter(Boolean) as {
+      x: number;
+      z: number;
+      id: string;
+      rocks: {
+        ox: number;
+        oz: number;
+        radius: number;
+        rx: number;
+        ry: number;
+        rz: number;
+        tone: number;
+      }[];
+      mossR: number;
+    }[];
   }, [exclusions, seed]);
 
   return (
@@ -931,26 +1083,34 @@ export function Boulders({
           >
             <circleGeometry args={[c.mossR, 20]} />
             <meshStandardMaterial
-              color="#5c9a45"
+              color="#4d8f38"
               roughness={1}
               transparent
-              opacity={0.5}
+              opacity={0.55}
               depthWrite={false}
             />
           </mesh>
-          {c.rocks.map((r, ri) => (
-            <mesh
-              key={ri}
-              position={[r.ox, r.radius * 0.65, r.oz]}
-              rotation={[r.rx, r.ry, r.rz]}
-              scale={[r.radius, r.radius * 0.72, r.radius]}
-              castShadow
-              receiveShadow
-            >
-              <dodecahedronGeometry args={[1, 0]} />
-              {mat(r.top ? "#c2cbc6" : "#97a3a6", { roughness: 0.9 })}
-            </mesh>
-          ))}
+          {c.rocks.map((r, ri) => {
+            const col =
+              r.tone > 0.66
+                ? "#c5d0cc"
+                : r.tone > 0.33
+                  ? "#9aaba8"
+                  : "#75848a";
+            return (
+              <mesh
+                key={ri}
+                position={[r.ox, r.radius * 0.55, r.oz]}
+                rotation={[r.rx, r.ry, r.rz]}
+                scale={[r.radius * 1.15, r.radius * 0.68, r.radius]}
+                castShadow
+                receiveShadow
+              >
+                <dodecahedronGeometry args={[1, 0]} />
+                {mat(col, { roughness: 0.92 })}
+              </mesh>
+            );
+          })}
         </group>
       ))}
     </group>
@@ -1535,7 +1695,8 @@ export function ForestBelt({ seed }: { seed: string }) {
 
   const flowers = useMemo(() => {
     const out: { x: number; z: number; id: string }[] = [];
-    for (let i = 0; i < 30; i++) {
+    // Scattered wildflowers like the BOTW meadow (small color accents in grass)
+    for (let i = 0; i < 55; i++) {
       out.push({
         x: (hash01(seed + "fx" + i) - 0.5) * (WORLD_W - 2),
         z: (hash01(seed + "fz" + i) - 0.5) * (WORLD_D - 1),
@@ -1547,7 +1708,7 @@ export function ForestBelt({ seed }: { seed: string }) {
 
   const rocks = useMemo(() => {
     const out: { x: number; z: number; id: string }[] = [];
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 14; i++) {
       out.push({
         x: (hash01(seed + "rx" + i) - 0.5) * (WORLD_W + 3),
         z: (hash01(seed + "rz" + i) - 0.5) * (WORLD_D + 3),
