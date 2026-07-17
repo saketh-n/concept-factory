@@ -18,6 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+import os
+
 import agent
 import launcher
 
@@ -263,6 +265,26 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def _warm_settings_catalog() -> None:
+    """Pre-poll the settings catalog in the background at boot.
+
+    Discovery costs ~1s cold (Claude CLI process startup dominates), so pay it
+    while the server is idle instead of on first modal open. Disable with
+    CF_SETTINGS_WARM=0 (tests do this).
+    """
+    if os.environ.get("CF_SETTINGS_WARM", "1").strip().lower() in ("0", "false", "no", "off"):
+        return
+
+    def _warm() -> None:
+        try:
+            agent.get_settings_catalog()
+        except Exception:  # noqa: BLE001 — warm is best-effort
+            pass
+
+    threading.Thread(target=_warm, daemon=True, name="cf-catalog-warm").start()
+
+
 @app.get("/api/state", response_model=State)
 def get_state() -> State:
     return state
@@ -301,7 +323,12 @@ def get_settings(syncCli: bool = False) -> dict:
 
 @app.put("/api/settings")
 def put_settings(payload: DriverSettingsUpdate) -> dict:
-    """Persist driver choice and model/options; jobs pick this up on next run."""
+    """Persist driver choice and model/options; jobs pick this up on next run.
+
+    Also compiles the selection back into CLI state (``~/.claude/settings.json``
+    model / ``~/.grok/config.toml`` default) so the interactive CLIs agree with
+    the widget. Disable with CF_SETTINGS_SYNC_CLI=0.
+    """
     current = agent.load_settings()
     patch = payload.model_dump(exclude_none=True)
     if "driver" in patch:
@@ -309,7 +336,9 @@ def put_settings(payload: DriverSettingsUpdate) -> dict:
     for key in ("grok", "claude"):
         if key in patch and isinstance(patch[key], dict):
             current.setdefault(key, {}).update(patch[key])
-    return agent.save_settings(current)
+    saved = agent.save_settings(current)
+    saved["cliSync"] = agent.sync_settings_to_cli(saved)
+    return saved
 
 
 @app.get("/api/settings/catalog")

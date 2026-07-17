@@ -1012,16 +1012,30 @@ def get_settings_catalog(force: bool = False) -> dict:
 
     now = _time.time()
     if not force:
+        stale_out: Optional[dict] = None
         with _catalog_lock:
-            if (
-                _catalog_cache is not None
-                and (now - _catalog_cache_fetched_at) < CATALOG_TTL_SECONDS
-            ):
-                out = json.loads(json.dumps(_catalog_cache))
-                out["cache"] = "memory"
-                out["ageSeconds"] = round(now - _catalog_cache_fetched_at, 3)
-                out["ttlSeconds"] = CATALOG_TTL_SECONDS
-                return out
+            if _catalog_cache is not None:
+                age = now - _catalog_cache_fetched_at
+                if age < CATALOG_TTL_SECONDS:
+                    out = json.loads(json.dumps(_catalog_cache))
+                    out["cache"] = "memory"
+                    out["ageSeconds"] = round(age, 3)
+                    out["ttlSeconds"] = CATALOG_TTL_SECONDS
+                    return out
+                # Expired: serve stale immediately, revalidate in background
+                # (stale-while-revalidate) so the modal never blocks ~1s on
+                # a cold Claude PTY probe. Refresh coalesces via inflight.
+                stale_out = json.loads(json.dumps(_catalog_cache))
+                stale_out["cache"] = "memory-stale-revalidating"
+                stale_out["ageSeconds"] = round(age, 3)
+                stale_out["ttlSeconds"] = CATALOG_TTL_SECONDS
+        if stale_out is not None:
+            threading.Thread(
+                target=lambda: get_settings_catalog(force=True),
+                daemon=True,
+                name="cf-catalog-revalidate",
+            ).start()
+            return stale_out
 
     wait_event: Optional[threading.Event] = None
     am_leader = False
@@ -1118,6 +1132,157 @@ def clear_settings_catalog_cache() -> None:
         _catalog_inflight = None
         _catalog_inflight_result = None
         _catalog_inflight_error = None
+
+
+# --- Widget → CLI write-back (compile settings to CLI state) -----------------
+# The settings modal previously wrote only backend/settings.json (app-local),
+# so the CLIs' own sticky selections never changed: pick "haiku" in the widget
+# and `claude` still launches with fable. These helpers close the loop by
+# writing the same files each CLI persists its selection to — exactly the
+# files discovery *reads* — so read and write paths agree:
+#   Claude → ~/.claude/settings.json  "model"
+#   Grok   → ~/.grok/config.toml      [models] default
+# Set CF_SETTINGS_SYNC_CLI=0 to disable (tests, or per-job-only overrides).
+
+
+def cli_sync_enabled() -> bool:
+    v = os.environ.get("CF_SETTINGS_SYNC_CLI", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _write_claude_cli_model(model: str) -> dict:
+    """Persist model into ``~/.claude/settings.json`` (merge, atomic replace)."""
+    path = Path.home() / ".claude" / "settings.json"
+    action = {"driver": DRIVER_CLAUDE, "target": str(path), "model": model}
+    try:
+        data: dict = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text() or "{}")
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (json.JSONDecodeError, ValueError):
+                # Don't clobber a file we can't parse.
+                return {**action, "ok": False, "changed": False,
+                        "error": "existing settings.json is not valid JSON; refusing to overwrite"}
+        if data.get("model") == model:
+            return {**action, "ok": True, "changed": False, "error": None}
+        data["model"] = model
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".cf-tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        tmp.replace(path)
+        return {**action, "ok": True, "changed": True, "error": None}
+    except OSError as e:
+        return {**action, "ok": False, "changed": False, "error": str(e)}
+
+
+def _write_grok_cli_model(model: str) -> dict:
+    """Persist model into ``~/.grok/config.toml`` ``[models] default`` (line edit)."""
+    path = Path.home() / ".grok" / "config.toml"
+    action = {"driver": DRIVER_GROK, "target": str(path), "model": model}
+    try:
+        text = path.read_text() if path.exists() else ""
+    except OSError as e:
+        return {**action, "ok": False, "changed": False, "error": str(e)}
+    if _read_grok_config_default() == model and path.exists():
+        return {**action, "ok": True, "changed": False, "error": None}
+
+    lines = text.splitlines()
+    out: List[str] = []
+    in_models = False
+    models_seen = False
+    replaced = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_models and not replaced:
+                out.append(f'default = "{model}"')
+                replaced = True
+            in_models = stripped.lower() == "[models]"
+            if in_models:
+                models_seen = True
+            out.append(line)
+            continue
+        if in_models and not replaced and re.match(r"^default\s*=", stripped):
+            out.append(f'default = "{model}"')
+            replaced = True
+            continue
+        out.append(line)
+    if in_models and not replaced:
+        out.append(f'default = "{model}"')
+        replaced = True
+    if not models_seen and not replaced:
+        if out and out[-1].strip():
+            out.append("")
+        out.append("[models]")
+        out.append(f'default = "{model}"')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".cf-tmp")
+        tmp.write_text("\n".join(out).rstrip("\n") + "\n")
+        tmp.replace(path)
+        return {**action, "ok": True, "changed": True, "error": None}
+    except OSError as e:
+        return {**action, "ok": False, "changed": False, "error": str(e)}
+
+
+def update_catalog_cache_current(driver: str, model: str) -> None:
+    """Reflect a write-back in the warm catalog cache so the modal stays
+    consistent without paying a re-discovery."""
+    if not model:
+        return
+    with _catalog_lock:
+        if _catalog_cache is None:
+            return
+        d = _catalog_cache.get(driver)
+        if not isinstance(d, dict):
+            return
+        d["currentModel"] = model
+        d["defaultModel"] = model
+        found = False
+        for o in d.get("models") or []:
+            if o.get("value") == model:
+                o["default"] = True
+                o["label"] = f"{model} (current)"
+                found = True
+            else:
+                if o.get("default"):
+                    o["default"] = False
+                lbl = o.get("label")
+                if isinstance(lbl, str) and lbl.endswith(" (current)"):
+                    o["label"] = o.get("value")
+        if not found:
+            models = d.setdefault("models", [])
+            models.insert(0, _opt(model, f"{model} (current)", default=True))
+
+
+def sync_settings_to_cli(settings: dict) -> dict:
+    """Compile stored widget settings into CLI state (model write-back).
+
+    Idempotent: writes are no-ops when the CLI file already matches. Returns
+    ``{"enabled": bool, "actions": [...]}`` for observability. Never raises.
+    """
+    if not cli_sync_enabled():
+        return {"enabled": False, "actions": []}
+    s = normalize_settings(settings)
+    actions: List[dict] = []
+    claude_model = (s.get("claude") or {}).get("model") or ""
+    grok_model = (s.get("grok") or {}).get("model") or ""
+    # Bootstrap sentinels mean "follow the CLI" — never write them back.
+    if claude_model in _CLAUDE_BOOTSTRAP_MODELS:
+        claude_model = ""
+    if claude_model:
+        res = _write_claude_cli_model(claude_model)
+        actions.append(res)
+        if res.get("ok"):
+            update_catalog_cache_current(DRIVER_CLAUDE, claude_model)
+    if grok_model:
+        res = _write_grok_cli_model(grok_model)
+        actions.append(res)
+        if res.get("ok"):
+            update_catalog_cache_current(DRIVER_GROK, grok_model)
+    return {"enabled": True, "actions": actions}
 
 
 # Grok is I/O-bound (mostly waiting on the API) but each run spawns a
