@@ -4,6 +4,7 @@ import TopicCard from "./components/TopicCard";
 import WorldMap from "./components/WorldMap";
 import GroupTree from "./components/GroupTree";
 import PlanModal from "./components/PlanModal";
+import SettingsModal from "./components/SettingsModal";
 import Workbench, { isPlanMode } from "./components/Workbench";
 import CreditsHud from "./components/CreditsHud";
 import {
@@ -12,6 +13,7 @@ import {
   IconPlus,
   IconRows,
   IconSearch,
+  IconSettings,
   IconSparkles,
   IconTrash,
   IconX,
@@ -87,6 +89,7 @@ export default function App() {
   const [workbenchOpen, setWorkbenchOpen] = useState(loadWorkbenchOpen);
   // Soft-highlight freshly added cards in the workbench for a few seconds.
   const [freshIds, setFreshIds] = useState<Set<string>>(new Set());
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const anyBusy = topics.some((t) => BUSY.includes(t.planStatus));
   const openPlan = topics.find((t) => t.id === openPlanId) ?? null;
@@ -277,9 +280,19 @@ export default function App() {
 
   return (
     <div className="app-shell min-h-screen">
-      {/* App bar: brand · studio direction · actions · credits */}
+      {/* App bar: settings · brand · studio direction · actions · credits */}
       <header className="sticky top-0 z-10 border-b border-white/[0.07] bg-[#0b101c]/85 backdrop-blur-xl">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:gap-4 sm:px-6">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="btn-ghost shrink-0 !px-2 !py-1.5 text-slate-400 hover:text-slate-100"
+            title="Agent settings"
+            aria-label="Open agent settings"
+          >
+            <IconSettings size={16} />
+          </button>
+
           <a
             href="/"
             className="flex shrink-0 select-none items-center gap-2.5"
@@ -556,6 +569,10 @@ export default function App() {
           onSaved={patchTopic}
           onClose={() => setOpenPlanId(null)}
         />
+      )}
+
+      {settingsOpen && (
+        <SettingsModal onClose={() => setSettingsOpen(false)} />
       )}
     </div>
   );

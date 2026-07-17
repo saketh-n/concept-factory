@@ -1,12 +1,14 @@
-"""Grok driver for Concept Factory.
+"""Agent drivers for Concept Factory.
 
 Each topic card gets its own subfolder under ``workspace/`` and its own
-headless Grok instance. We never point the agent at the meta-agent
-template folder (that would blow up token usage across ~100 parallel runs);
-instead the house style is condensed into the prompt below.
+headless agent instance (Grok Build or Claude Code). We never point the
+agent at the meta-agent template folder (that would blow up token usage
+across ~100 parallel runs); instead the house style is condensed into the
+prompt below.
 
-This module is a *pure driver*: it knows how to run ``grok`` and build
-prompts. All persisted state lives in main.py.
+This module is a *pure driver*: it knows how to run the selected CLI and
+build prompts. Topic state lives in main.py; global driver settings live
+in ``settings.json`` next to this module.
 """
 from __future__ import annotations
 
@@ -18,16 +20,1105 @@ import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 TEMPLATE_DIR = Path(__file__).parents[1] / "meta-agent" / "template"
 
 WORKSPACE = Path(__file__).parent / "workspace"
 WORKSPACE.mkdir(exist_ok=True)
 
-# Path to the Grok CLI. Override with GROK_BIN if it isn't on PATH
-# (common install location: ~/.grok/bin/grok).
+# Path to the Grok / Claude CLIs. Override with GROK_BIN / CLAUDE_BIN if they
+# aren't on PATH (common install locations: ~/.grok/bin/grok, ~/.local/bin/claude).
 GROK_BIN = os.environ.get("GROK_BIN") or shutil.which("grok") or "grok"
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
+
+# Global factory settings (driver + per-driver options). Separate from data.json
+# so topic cards and driver config don't thrash the same lock/file.
+SETTINGS_FILE = Path(__file__).parent / "settings.json"
+_settings_lock = threading.Lock()
+
+DRIVER_GROK = "grok"
+DRIVER_CLAUDE = "claude"
+DRIVERS = (DRIVER_GROK, DRIVER_CLAUDE)
+
+DEFAULT_SETTINGS: Dict[str, Any] = {
+    "driver": DRIVER_GROK,
+    "grok": {
+        # Empty → follow the CLI's currently selected / default model.
+        "model": "",
+        "permissionMode": "acceptEdits",
+        "reasoningEffort": "",  # empty | low | medium | high
+    },
+    "claude": {
+        # Empty → follow Claude Code's currently selected model (not a hard-wired alias).
+        "model": "",
+        "permissionMode": "bypassPermissions",
+        "effort": "",  # empty | low | medium | high | xhigh | max
+        "dangerouslySkipPermissions": True,
+    },
+}
+
+# Historical bootstrap default that was hard-coded before live CLI current.
+# Treated as "unset / follow CLI" so a stale sonnet doesn't mask fable, etc.
+_CLAUDE_BOOTSTRAP_MODELS = frozenset({"", "sonnet"})
+
+
+def default_settings() -> dict:
+    """Deep copy of factory defaults (safe to mutate)."""
+    return json.loads(json.dumps(DEFAULT_SETTINGS))
+
+
+def normalize_settings(raw: Optional[dict] = None) -> dict:
+    """Merge partial/unknown settings into a complete, valid settings object."""
+    base = default_settings()
+    if not raw or not isinstance(raw, dict):
+        return base
+    driver = raw.get("driver") or base["driver"]
+    if driver not in DRIVERS:
+        # Accept friendly aliases from the UI.
+        alias = str(driver).strip().lower().replace("_", " ").replace("-", " ")
+        if alias in ("grok build", "grok", "xai"):
+            driver = DRIVER_GROK
+        elif alias in ("claude code", "claude", "anthropic"):
+            driver = DRIVER_CLAUDE
+        else:
+            driver = base["driver"]
+    base["driver"] = driver
+    for key in ("grok", "claude"):
+        section = raw.get(key)
+        if isinstance(section, dict):
+            for k, v in section.items():
+                if k in base[key]:
+                    base[key][k] = v if v is not None else base[key][k]
+    # Coerce booleans that may arrive as strings from forms.
+    cskip = base["claude"].get("dangerouslySkipPermissions")
+    if isinstance(cskip, str):
+        base["claude"]["dangerouslySkipPermissions"] = cskip.strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    return base
+
+
+def load_settings() -> dict:
+    with _settings_lock:
+        if SETTINGS_FILE.is_file():
+            try:
+                data = json.loads(SETTINGS_FILE.read_text())
+                return normalize_settings(data if isinstance(data, dict) else None)
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
+        return default_settings()
+
+
+def save_settings(settings: dict) -> dict:
+    cleaned = normalize_settings(settings)
+    with _settings_lock:
+        SETTINGS_FILE.write_text(json.dumps(cleaned, indent=2) + "\n")
+    return cleaned
+
+
+# --- Settings option catalog (live discovery + TTL cache) -------------------
+# Dropdown options come from real CLIs / their config files — never a hard-coded
+# model ID list in the frontend.
+#
+# TTL cache: discovery can take ~1s (Claude PTY). Cache results so settings open
+# is fast after the first poll; force=True / refresh busts the cache.
+# Concurrent callers coalesce onto one in-flight discovery.
+#
+# Sources:
+#   Grok current  → ~/.grok/config.toml [models].default
+#   Grok models   → ~/.grok/models_cache.json (CLI's own cache), else `grok models`
+#   Claude current → ~/.claude/settings.json "model" + PTY /model
+#   Claude models  → `claude -p /model` (PTY; full Available list)
+#   Enums         → `grok --help` / `claude --help` in parallel
+#
+# Probes within a driver run in parallel; drivers run in parallel too so wall
+# time ≈ max(probe) rather than sum.
+
+import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Wall-clock for a single discovery subprocess.
+CATALOG_CLI_TIMEOUT = int(os.environ.get("CF_SETTINGS_CATALOG_TIMEOUT", "90"))
+# How long a successful catalog poll is reused (seconds).
+CATALOG_TTL_SECONDS = int(os.environ.get("CF_SETTINGS_CATALOG_TTL", "3600"))
+# Claude's full Available: list needs a ~1s headless PTY session (`-p /model`).
+# Default ON so the model dropdown matches the live CLI list. Set
+# CF_SETTINGS_CLAUDE_PTY=0 to skip PTY and use settings.json + help aliases only.
+_claude_pty_env = os.environ.get("CF_SETTINGS_CLAUDE_PTY", "1").strip().lower()
+CATALOG_USE_CLAUDE_PTY = _claude_pty_env not in ("0", "false", "no", "off")
+
+_catalog_lock = threading.Lock()
+_catalog_cache: Optional[dict] = None
+_catalog_cache_fetched_at: float = 0.0
+_catalog_inflight: Optional[threading.Event] = None
+_catalog_inflight_result: Optional[dict] = None
+_catalog_inflight_error: Optional[BaseException] = None
+# Test / observability: number of times we actually spawn a discovery CLI.
+_cli_spawn_count = 0
+
+
+def reset_cli_spawn_count() -> None:
+    """Test helper: zero the discovery-spawn counter."""
+    global _cli_spawn_count
+    _cli_spawn_count = 0
+
+
+def get_cli_spawn_count() -> int:
+    """How many discovery subprocesses have been launched (process lifetime)."""
+    return _cli_spawn_count
+
+
+def _run_discovery_cli_pipes(argv: List[str], timeout: int) -> dict:
+    """Capture stdout/stderr via plain pipes (works for ``grok models``, ``--help``)."""
+    proc = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return {
+        "argv": list(argv),
+        "stdout": proc.stdout or "",
+        "stderr": proc.stderr or "",
+        "returncode": proc.returncode,
+        "error": None,
+        "pty": False,
+    }
+
+
+def _run_discovery_cli_pty(argv: List[str], timeout: int) -> dict:
+    """Run under a pseudo-TTY.
+
+    Claude Code's headless ``/model`` listing fails with a spurious API 400 when
+    stdout is a plain pipe (``model: String should have at most 256 characters``)
+    but succeeds when attached to a PTY — same argv. Use this for that probe.
+    """
+    import pty
+    import select
+
+    master, slave = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            close_fds=True,
+        )
+    finally:
+        os.close(slave)
+
+    chunks: List[bytes] = []
+    deadline = _time.time() + timeout
+    try:
+        while _time.time() < deadline:
+            remaining = max(0.05, deadline - _time.time())
+            ready, _, _ = select.select([master], [], [], min(0.5, remaining))
+            if master in ready:
+                try:
+                    data = os.read(master, 8192)
+                except OSError:
+                    break
+                if not data:
+                    break
+                chunks.append(data)
+            if proc.poll() is not None:
+                # Drain residual output.
+                while True:
+                    ready, _, _ = select.select([master], [], [], 0.05)
+                    if master not in ready:
+                        break
+                    try:
+                        data = os.read(master, 8192)
+                    except OSError:
+                        data = b""
+                    if not data:
+                        break
+                    chunks.append(data)
+                break
+        else:
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            return {
+                "argv": list(argv),
+                "stdout": b"".join(chunks).decode("utf-8", errors="replace"),
+                "stderr": "",
+                "returncode": -1,
+                "error": f"timed out after {timeout}s",
+                "pty": True,
+            }
+        rc = proc.wait(timeout=5)
+    finally:
+        try:
+            os.close(master)
+        except OSError:
+            pass
+
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    # Strip common PTY noise (script ^D, CR).
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", text)  # ANSI CSI
+    return {
+        "argv": list(argv),
+        "stdout": text,
+        "stderr": "",
+        "returncode": rc if rc is not None else -1,
+        "error": None,
+        "pty": True,
+    }
+
+
+def run_discovery_cli(
+    argv: List[str],
+    timeout: Optional[int] = None,
+    *,
+    use_pty: bool = False,
+) -> dict:
+    """Spawn a discovery CLI and return {argv, stdout, stderr, returncode, error}.
+
+    This is the single spawn seam tests spy on to prove live polling vs cache hits.
+    Set ``use_pty=True`` for Claude's headless ``/model`` probe (pipe breaks it).
+    """
+    global _cli_spawn_count
+    _cli_spawn_count += 1
+    t = CATALOG_CLI_TIMEOUT if timeout is None else timeout
+    try:
+        if use_pty:
+            return _run_discovery_cli_pty(argv, t)
+        return _run_discovery_cli_pipes(argv, t)
+    except FileNotFoundError as e:
+        return {
+            "argv": list(argv),
+            "stdout": "",
+            "stderr": "",
+            "returncode": 127,
+            "error": f"CLI not found: {e}",
+            "pty": use_pty,
+        }
+    except subprocess.TimeoutExpired as e:
+        return {
+            "argv": list(argv),
+            "stdout": (e.stdout or "") if isinstance(e.stdout, str) else "",
+            "stderr": (e.stderr or "") if isinstance(e.stderr, str) else "",
+            "returncode": -1,
+            "error": f"timed out after {t}s",
+            "pty": use_pty,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "argv": list(argv),
+            "stdout": "",
+            "stderr": "",
+            "returncode": -1,
+            "error": str(e),
+            "pty": use_pty,
+        }
+
+
+def _opt(value: str, label: Optional[str] = None, **extra: Any) -> dict:
+    return {"value": value, "label": label if label is not None else value, **extra}
+
+
+def parse_grok_models_output(text: str) -> dict:
+    """Parse ``grok models`` stdout into models + concrete current/default id.
+
+    No empty "CLI default" placeholder — the current selection is the real
+    default model id (e.g. ``grok-4.5``).
+    """
+    models: List[dict] = []
+    default: Optional[str] = None
+    # Lines like: "  - grok-4.3" or "  * grok-4.5 (default)"
+    line_re = re.compile(
+        r"^\s*([-*•])\s+(\S+?)(?:\s+\(default\))?\s*$", re.IGNORECASE
+    )
+    # Also: "Default model: grok-4.5"
+    dm = re.search(r"(?im)^\s*Default model:\s*(\S+)\s*$", text or "")
+    if dm:
+        default = dm.group(1).strip()
+    for line in (text or "").splitlines():
+        m = line_re.match(line)
+        if not m:
+            continue
+        marker, mid = m.group(1), m.group(2).strip()
+        is_default = marker == "*" or "(default)" in line.lower()
+        if is_default:
+            default = mid
+        models.append(
+            _opt(
+                mid,
+                f"{mid} (current)" if is_default or mid == default else mid,
+                default=bool(is_default or mid == default),
+            )
+        )
+    # Deduplicate preserving order
+    seen = set()
+    uniq: List[dict] = []
+    for o in models:
+        if o["value"] in seen:
+            continue
+        seen.add(o["value"])
+        if default and o["value"] == default:
+            o["default"] = True
+            o["label"] = f"{o['value']} (current)"
+        uniq.append(o)
+    return {
+        "models": uniq,
+        "default": default or "",
+        "currentModel": default or (uniq[0]["value"] if uniq else ""),
+    }
+
+
+def map_claude_current_to_alias(
+    current_label: str,
+    available: List[str],
+    settings_model: str = "",
+) -> str:
+    """Map CLI 'Current model: Fable 5' / settings ids onto a selectable alias.
+
+    Prefer exact available matches, then settings.json model, then label tokens
+    (``Fable 5`` → ``fable``, ``Haiku 4.5`` → ``haiku``).
+    """
+    values = [v for v in available if v]
+    value_set = set(values)
+    settings_model = (settings_model or "").strip()
+    current_label = (current_label or "").strip()
+
+    if settings_model and settings_model in value_set:
+        return settings_model
+
+    # settings may store full ids: claude-fable-5[1m] → fable[1m] / fable
+    if settings_model:
+        low = settings_model.lower()
+        wants_1m = "[1m]" in low
+        # Prefer longer alias matches (fable[1m] before fable); if settings
+        # encodes a 1m context window, prefer *[1m] aliases first.
+        ranked = sorted(
+            values,
+            key=lambda v: (
+                0 if wants_1m and "[1m]" in v.lower() else 1,
+                -len(v),
+            ),
+        )
+        for v in ranked:
+            vl = v.lower()
+            base = vl.replace("[1m]", "")
+            if vl in low or low in vl:
+                return v
+            # claude-fable-5[1m] contains "fable"
+            if base and base in low:
+                if wants_1m and "[1m]" not in vl:
+                    # keep looking for a 1m variant first
+                    continue
+                return v
+        # Strip provider prefix / version noise
+        core = re.sub(r"^claude-", "", low)
+        core = re.sub(r"\[1m\]", "", core)
+        core = re.sub(r"-\d.*$", "", core)  # fable-5 → fable (approx)
+        for v in ranked:
+            base = v.lower().replace("[1m]", "")
+            if base and (base in core or core.startswith(base)):
+                return v
+
+    if not current_label:
+        return ""
+
+    # Exact available match on full label
+    if current_label in value_set:
+        return current_label
+
+    # "Fable 5" / "Haiku 4.5" / "Sonnet 5" → first token
+    first = current_label.split()[0].strip().lower()
+    # Prefer 1m variant only when settings said so (handled above); label alone → base
+    if first in value_set:
+        return first
+
+    # Label contains alias
+    low_label = current_label.lower()
+    for v in sorted(values, key=lambda x: len(x), reverse=True):
+        if v.lower() in low_label:
+            return v
+
+    return first if first else ""
+
+
+def parse_claude_models_output(text: str, settings_model: str = "") -> dict:
+    """Parse headless ``claude -p /model`` text into options + **current** alias.
+
+    Typical output:
+      Current model: Fable 5
+      Usage: /model <name>. Available: sonnet, opus, haiku, fable, ...
+    """
+    models: List[dict] = []
+    text = text or ""
+    cm = re.search(r"(?im)Current model:\s*(.+?)\s*$", text)
+    current_label = cm.group(1).strip() if cm else ""
+
+    avail = re.search(r"(?is)Available:\s*(.+?)(?:\.\s*$|\n|$)", text)
+    if avail:
+        blob = avail.group(1)
+        blob = re.sub(r"(?i)\bor a full model ID\b.*$", "", blob).strip()
+        parts = [p.strip().strip(".") for p in blob.split(",") if p.strip()]
+        cleaned: List[str] = []
+        for p in parts:
+            p = re.sub(r"(?i)^\s*or\s+", "", p).strip()
+            if not p:
+                continue
+            if not re.match(r"^[\w.\[\]/-]+$", p):
+                continue
+            cleaned.append(p)
+        for mid in cleaned:
+            models.append(_opt(mid))
+    if not models:
+        for m in re.finditer(r"(?m)^\s*[-*]\s+([A-Za-z0-9_./\[\]-]+)\s*$", text):
+            models.append(_opt(m.group(1)))
+
+    seen = set()
+    uniq: List[dict] = []
+    for o in models:
+        if o["value"] in seen:
+            continue
+        seen.add(o["value"])
+        uniq.append(o)
+
+    values = [o["value"] for o in uniq]
+    current = map_claude_current_to_alias(current_label, values, settings_model)
+    # Mark current in labels
+    for o in uniq:
+        if current and o["value"] == current:
+            o["default"] = True
+            o["label"] = f"{o['value']} (current)"
+
+    return {
+        "models": uniq,
+        "default": current,
+        "currentModel": current,
+        "currentLabel": current_label,
+    }
+
+
+def parse_help_possible_values(help_text: str, flag: str) -> List[str]:
+    """Extract enum values for a CLI flag from ``--help`` text.
+
+    Handles:
+      --permission-mode <MODE> ... [possible values: a, b, c]
+      --permission-mode <mode> (choices: "a", "b", "c")
+      --effort <level> (low, medium, high, xhigh, max)
+    """
+    text = help_text or ""
+    # Find the flag section (from the flag to the next --flag or end)
+    # Flags may appear as --foo or --foo <ARG>
+    flag_esc = re.escape(flag)
+    # Match flag line + following indented lines until next option
+    m = re.search(
+        rf"(?ims)^\s*{flag_esc}\b.*?(?=^\s+--[a-z]|\Z)",
+        text,
+    )
+    section = m.group(0) if m else ""
+    if not section:
+        # Sometimes help wraps and flag is alone on one line with values on next
+        m2 = re.search(
+            rf"(?ims)^\s*{flag_esc}\b.*$",
+            text,
+        )
+        if m2:
+            start = m2.start()
+            section = text[start : start + 600]
+
+    # [possible values: a, b, c]
+    pv = re.search(r"\[possible values:\s*([^\]]+)\]", section, re.I)
+    if pv:
+        return [x.strip().strip("\"'") for x in pv.group(1).split(",") if x.strip()]
+
+    # (choices: "a", "b", "c") — may span lines
+    ch = re.search(r"\(choices:\s*([^)]+)\)", section, re.I | re.S)
+    if ch:
+        raw = ch.group(1)
+        return [x.strip().strip("\"'") for x in re.split(r"[,\n]", raw) if x.strip().strip("\"'")]
+
+    # Parenthetical bare list after effort-like flags: (low, medium, high, xhigh, max)
+    bare = re.search(
+        r"\(([a-z][a-z0-9_-]*(?:\s*,\s*[a-z][a-z0-9_-]*)+)\)",
+        section,
+        re.I,
+    )
+    if bare:
+        return [x.strip() for x in bare.group(1).split(",") if x.strip()]
+
+    return []
+
+
+def parse_help_effort_levels(help_text: str) -> List[str]:
+    """Claude ``--effort`` levels from help (low, medium, high, xhigh, max)."""
+    vals = parse_help_possible_values(help_text, "--effort")
+    if vals:
+        return vals
+    # Broader scan: "Effort level ... (low, medium, high, xhigh, max)"
+    m = re.search(
+        r"(?is)--effort\b.*?(\(\s*low\s*,\s*medium\s*,\s*high[^)]*\))",
+        help_text or "",
+    )
+    if m:
+        inner = m.group(1).strip("()")
+        return [x.strip() for x in inner.split(",") if x.strip()]
+    return []
+
+
+def _labelize(value: str) -> str:
+    if not value:
+        return "Default"
+    # acceptEdits → Accept edits
+    spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", value)
+    spaced = spaced.replace("-", " ").replace("_", " ")
+    return spaced[:1].upper() + spaced[1:] if spaced else value
+
+
+def _read_grok_config_default() -> str:
+    """Sticky default from ``~/.grok/config.toml`` ``[models] default = "…"``."""
+    path = Path.home() / ".grok" / "config.toml"
+    try:
+        text = path.read_text()
+    except OSError:
+        return ""
+    # Prefer [models] section default=
+    in_models = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_models = stripped.lower() == "[models]"
+            continue
+        if in_models:
+            m = re.match(r'default\s*=\s*"([^"]+)"', stripped)
+            if m:
+                return m.group(1).strip()
+            m = re.match(r"default\s*=\s*'([^']+)'", stripped)
+            if m:
+                return m.group(1).strip()
+    # Fallback: first default = anywhere
+    m = re.search(r'(?m)^\s*default\s*=\s*"([^"]+)"', text)
+    return m.group(1).strip() if m else ""
+
+
+def _read_grok_models_cache() -> dict:
+    """Parse ``~/.grok/models_cache.json`` (Grok's own on-disk model list).
+
+    Returns {models: [{value,label}], default: str} or empty dict on miss.
+    """
+    path = Path.home() / ".grok" / "models_cache.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    raw = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    models: List[dict] = []
+    for mid in raw.keys():
+        mid = str(mid).strip()
+        if mid:
+            models.append(_opt(mid))
+    cfg_default = _read_grok_config_default()
+    default = cfg_default
+    if not default:
+        # Prefer non-hidden agent models; fall back to first key
+        default = next((m["value"] for m in models if m["value"].startswith("grok-")), "")
+        if not default and models:
+            default = models[0]["value"]
+    for o in models:
+        if default and o["value"] == default:
+            o["default"] = True
+            o["label"] = f"{o['value']} (current)"
+    return {
+        "models": models,
+        "default": default,
+        "currentModel": default,
+        "source": "models_cache.json",
+    }
+
+
+def discover_grok_options() -> dict:
+    """Live discovery for Grok Build: models + help enums.
+
+    Prefers Grok's own ``models_cache.json`` + ``config.toml`` (near-instant)
+    and only shells out to ``grok models`` when the cache file is missing.
+    Help enums still come from a quick ``grok --help``.
+    """
+    file_models = _read_grok_models_cache()
+    cfg_default = _read_grok_config_default()
+
+    def _help() -> dict:
+        return run_discovery_cli([GROK_BIN, "--help"])
+
+    def _cli_models() -> dict:
+        return run_discovery_cli([GROK_BIN, "models"])
+
+    models_run: Optional[dict] = None
+    help_run: dict
+    if file_models.get("models"):
+        # Parallel: only help (models already from disk)
+        help_run = _help()
+        parsed = {
+            "models": file_models["models"],
+            "default": cfg_default or file_models.get("default") or "",
+            "currentModel": cfg_default or file_models.get("currentModel") or "",
+        }
+        # Re-mark current label from config.toml
+        for o in parsed["models"]:
+            if parsed["currentModel"] and o["value"] == parsed["currentModel"]:
+                o["default"] = True
+                o["label"] = f"{o['value']} (current)"
+            elif o.get("default") and o["value"] != parsed["currentModel"]:
+                o["default"] = False
+                o["label"] = o["value"]
+        models_probe = {
+            "argv": ["file", str(Path.home() / ".grok" / "models_cache.json")],
+            "returncode": 0,
+            "error": None,
+            "source": "models_cache.json",
+        }
+    else:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_models = pool.submit(_cli_models)
+            f_help = pool.submit(_help)
+            models_run = f_models.result()
+            help_run = f_help.result()
+        combined_out = (models_run.get("stdout") or "") + "\n" + (models_run.get("stderr") or "")
+        parsed = parse_grok_models_output(combined_out)
+        if cfg_default:
+            parsed["currentModel"] = cfg_default
+            parsed["default"] = cfg_default
+            for o in parsed["models"]:
+                if o["value"] == cfg_default:
+                    o["default"] = True
+                    o["label"] = f"{o['value']} (current)"
+                else:
+                    o["default"] = False
+                    if o["label"].endswith(" (current)"):
+                        o["label"] = o["value"]
+        models_probe = {
+            "argv": models_run.get("argv"),
+            "returncode": models_run.get("returncode"),
+            "error": models_run.get("error"),
+            "source": "grok models",
+        }
+
+    help_text = (help_run.get("stdout") or "") + "\n" + (help_run.get("stderr") or "")
+    perm = parse_help_possible_values(help_text, "--permission-mode")
+    reasoning = parse_help_possible_values(help_text, "--reasoning-effort")
+    err_parts = [x for x in ((models_run or {}).get("error"), help_run.get("error")) if x]
+    if (
+        models_run
+        and models_run.get("returncode") not in (0, None)
+        and not parsed["models"]
+    ):
+        err_parts.append(
+            f"grok models exited {models_run.get('returncode')}: "
+            f"{(models_run.get('stderr') or models_run.get('stdout') or '')[-200:]}"
+        )
+    current = (
+        cfg_default
+        or parsed.get("currentModel")
+        or parsed.get("default")
+        or ""
+    )
+    return {
+        "driver": DRIVER_GROK,
+        "models": parsed["models"],
+        "defaultModel": parsed.get("default") or current,
+        "currentModel": current,
+        "permissionModes": [_opt(v, _labelize(v)) for v in perm],
+        "reasoningEfforts": [_opt("", "Default")]
+        + [_opt(v, _labelize(v)) for v in reasoning],
+        "error": "; ".join(err_parts) if err_parts and not parsed["models"] else None,
+        "probes": {
+            "models": models_probe,
+            "help": {
+                "argv": help_run.get("argv"),
+                "returncode": help_run.get("returncode"),
+                "error": help_run.get("error"),
+            },
+            "configDefault": cfg_default,
+        },
+    }
+
+
+def _claude_models_from_help(help_text: str) -> List[str]:
+    """Secondary source: model aliases mentioned in ``claude --help`` examples."""
+    # e.g. 'fable', 'opus', or 'sonnet'  /  'claude-fable-5'
+    found: List[str] = []
+    for m in re.finditer(
+        r"['\"]((?:claude-)?(?:sonnet|opus|haiku|fable|best)[A-Za-z0-9_.\[\]-]*)['\"]",
+        help_text or "",
+        re.I,
+    ):
+        mid = m.group(1)
+        if mid not in found:
+            found.append(mid)
+    return found
+
+
+def _read_claude_user_settings_model() -> str:
+    """Model id from ``~/.claude/settings.json`` when present (CLI sticky selection)."""
+    path = Path.home() / ".claude" / "settings.json"
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict):
+            m = data.get("model")
+            return str(m).strip() if m else ""
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return ""
+
+
+def discover_claude_options() -> dict:
+    """Live discovery for Claude Code.
+
+    **Current model** always comes from ``~/.claude/settings.json`` (instant,
+    matches sticky CLI selection). **Available models** default from
+    ``claude --help`` aliases (fast). Optionally set ``CF_SETTINGS_CLAUDE_PTY=1``
+    to also run headless ``claude -p /model`` under a PTY for the full
+    Available: list (~1s extra).
+
+    Help enums always from ``claude --help``. Probes run in parallel.
+    """
+    settings_model = _read_claude_user_settings_model()
+    model_argv = [
+        CLAUDE_BIN,
+        "-p",
+        "/model",
+        "--output-format",
+        "text",
+    ]
+
+    def _help() -> dict:
+        return run_discovery_cli([CLAUDE_BIN, "--help"])
+
+    def _model_pty() -> dict:
+        return run_discovery_cli(model_argv, use_pty=True)
+
+    model_run: Optional[dict] = None
+    if not CATALOG_USE_CLAUDE_PTY:
+        help_run = _help()
+        combined = ""
+        models_probe = {
+            "argv": ["file+help", "settings.json", "claude --help"],
+            "returncode": 0,
+            "error": None,
+            "pty": False,
+            "skipped": True,
+        }
+    else:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_model = pool.submit(_model_pty)
+            f_help = pool.submit(_help)
+            model_run = f_model.result()
+            help_run = f_help.result()
+        combined = (model_run.get("stdout") or "") + "\n" + (model_run.get("stderr") or "")
+        models_probe = {
+            "argv": model_run.get("argv"),
+            "returncode": model_run.get("returncode"),
+            "error": model_run.get("error"),
+            "pty": model_run.get("pty"),
+        }
+
+    if combined.strip().startswith("{"):
+        try:
+            evt = json.loads(combined.strip().splitlines()[0])
+            if isinstance(evt, dict) and evt.get("result"):
+                combined = str(evt["result"])
+        except (json.JSONDecodeError, ValueError):
+            pass
+    parsed = parse_claude_models_output(combined, settings_model=settings_model)
+    help_text = (help_run.get("stdout") or "") + "\n" + (help_run.get("stderr") or "")
+    # Prefer settings.json as source of truth for *current* (file is what CLI persists).
+    help_models = _claude_models_from_help(help_text)
+    if not parsed["models"]:
+        if help_models:
+            current = map_claude_current_to_alias(
+                "", help_models, settings_model
+            ) or (help_models[0] if help_models else "")
+            parsed = {
+                "models": [_opt(m) for m in help_models],
+                "default": current,
+                "currentModel": current,
+                "currentLabel": "",
+            }
+    # Merge help aliases into list so we never lose documented models.
+    if help_models:
+        have = {o["value"] for o in parsed["models"]}
+        for m in help_models:
+            if m not in have:
+                parsed["models"].append(_opt(m))
+                have.add(m)
+    # Current: settings.json wins when present.
+    if settings_model:
+        values = [o["value"] for o in parsed.get("models") or []]
+        mapped = map_claude_current_to_alias(
+            parsed.get("currentLabel") or "", values, settings_model
+        )
+        if mapped:
+            parsed["currentModel"] = mapped
+            parsed["default"] = mapped
+        elif settings_model not in values:
+            # Full id not in list — still surface it as selected + option.
+            parsed["models"].insert(0, _opt(settings_model, f"{settings_model} (current)"))
+            parsed["currentModel"] = settings_model
+            parsed["default"] = settings_model
+    elif not parsed.get("currentModel"):
+        values = [o["value"] for o in parsed.get("models") or []]
+        parsed["currentModel"] = map_claude_current_to_alias(
+            parsed.get("currentLabel") or "", values, ""
+        )
+        parsed["default"] = parsed["currentModel"]
+
+    # Mark current on labels
+    cur = parsed.get("currentModel") or ""
+    for o in parsed["models"]:
+        if cur and o["value"] == cur:
+            o["default"] = True
+            if "(current)" not in o["label"]:
+                o["label"] = f"{o['value']} (current)"
+
+    perm = parse_help_possible_values(help_text, "--permission-mode")
+    effort = parse_help_effort_levels(help_text)
+    err_parts = [
+        x
+        for x in ((model_run or {}).get("error"), help_run.get("error"))
+        if x
+    ]
+    if not parsed["models"]:
+        detail = ((model_run or {}).get("stderr") or (model_run or {}).get("stdout") or "")[
+            -240:
+        ]
+        err_parts.append(
+            f"claude model list empty (rc={(model_run or {}).get('returncode')}): {detail}"
+        )
+    current = parsed.get("currentModel") or parsed.get("default") or ""
+    return {
+        "driver": DRIVER_CLAUDE,
+        "models": parsed["models"],
+        "defaultModel": current,
+        "currentModel": current,
+        "currentLabel": parsed.get("currentLabel") or "",
+        "settingsModel": settings_model,
+        "permissionModes": [_opt(v, _labelize(v)) for v in perm],
+        "efforts": [_opt("", "Default")] + [_opt(v, _labelize(v)) for v in effort],
+        "error": "; ".join(err_parts) if err_parts and not parsed["models"] else None,
+        "probes": {
+            "models": models_probe,
+            "help": {
+                "argv": help_run.get("argv"),
+                "returncode": help_run.get("returncode"),
+                "error": help_run.get("error"),
+            },
+        },
+    }
+
+
+def resolve_model_selection(
+    stored: str,
+    cli_current: str,
+    *,
+    driver: str = DRIVER_CLAUDE,
+    follow_cli: bool = False,
+) -> str:
+    """Choose which model id the settings UI / jobs should use.
+
+    - Empty stored (or historical Claude bootstrap ``sonnet``) → live CLI current.
+    - ``follow_cli=True`` (catalog refresh) → always prefer live CLI current.
+    - Otherwise keep an explicit factory override.
+    """
+    stored = (stored or "").strip()
+    cli_current = (cli_current or "").strip()
+    if follow_cli and cli_current:
+        return cli_current
+    if driver == DRIVER_CLAUDE and stored in _CLAUDE_BOOTSTRAP_MODELS:
+        return cli_current or stored
+    if not stored:
+        return cli_current
+    return stored
+
+
+def apply_cli_current_to_settings(
+    settings: Optional[dict],
+    catalog: dict,
+    *,
+    follow_cli: bool = False,
+) -> dict:
+    """Return settings with model fields resolved against catalog current models."""
+    s = normalize_settings(settings)
+    grok_cur = (
+        (catalog.get("grok") or {}).get("currentModel")
+        or (catalog.get("grok") or {}).get("defaultModel")
+        or ""
+    )
+    claude_cur = (
+        (catalog.get("claude") or {}).get("currentModel")
+        or (catalog.get("claude") or {}).get("defaultModel")
+        or ""
+    )
+    s["grok"]["model"] = resolve_model_selection(
+        s["grok"].get("model") or "",
+        grok_cur,
+        driver=DRIVER_GROK,
+        follow_cli=follow_cli,
+    )
+    s["claude"]["model"] = resolve_model_selection(
+        s["claude"].get("model") or "",
+        claude_cur,
+        driver=DRIVER_CLAUDE,
+        follow_cli=follow_cli,
+    )
+    s["cliCurrent"] = {"grok": grok_cur, "claude": claude_cur}
+    return s
+
+
+def discover_settings_catalog() -> dict:
+    """Run full live discovery for both drivers in parallel."""
+    fetched_at = _time.time()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_grok = pool.submit(discover_grok_options)
+        f_claude = pool.submit(discover_claude_options)
+        grok = f_grok.result()
+        claude = f_claude.result()
+    elapsed_ms = round((_time.time() - fetched_at) * 1000, 1)
+    return {
+        "fetchedAt": fetched_at,
+        "fetchedAtIso": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(fetched_at)),
+        "elapsedMs": elapsed_ms,
+        "ttlSeconds": CATALOG_TTL_SECONDS,
+        "source": "live-cli",
+        "cache": "none",
+        "grok": grok,
+        "claude": claude,
+    }
+
+
+def get_settings_catalog(force: bool = False) -> dict:
+    """Return the settings option catalog, using a TTL memory cache.
+
+    ``force=True`` busts the cache (refresh button). Concurrent callers share
+    one in-flight discovery so parallel GET /settings + GET /catalog do not
+    double-spawn CLIs.
+    """
+    global _catalog_cache, _catalog_cache_fetched_at
+    global _catalog_inflight, _catalog_inflight_result, _catalog_inflight_error
+
+    now = _time.time()
+    if not force:
+        with _catalog_lock:
+            if (
+                _catalog_cache is not None
+                and (now - _catalog_cache_fetched_at) < CATALOG_TTL_SECONDS
+            ):
+                out = json.loads(json.dumps(_catalog_cache))
+                out["cache"] = "memory"
+                out["ageSeconds"] = round(now - _catalog_cache_fetched_at, 3)
+                out["ttlSeconds"] = CATALOG_TTL_SECONDS
+                return out
+
+    wait_event: Optional[threading.Event] = None
+    am_leader = False
+    with _catalog_lock:
+        if _catalog_inflight is not None:
+            wait_event = _catalog_inflight
+        else:
+            _catalog_inflight = threading.Event()
+            _catalog_inflight_result = None
+            _catalog_inflight_error = None
+            wait_event = _catalog_inflight
+            am_leader = True
+
+    if not am_leader:
+        assert wait_event is not None
+        wait_event.wait(timeout=CATALOG_CLI_TIMEOUT + 30)
+        with _catalog_lock:
+            if _catalog_inflight_error is not None:
+                # Fall through only if we have no usable cache
+                if _catalog_cache is not None and not force:
+                    out = json.loads(json.dumps(_catalog_cache))
+                    out["cache"] = "memory-stale"
+                    out["ageSeconds"] = round(_time.time() - _catalog_cache_fetched_at, 3)
+                    return out
+                if _catalog_inflight_result is not None:
+                    out = json.loads(json.dumps(_catalog_inflight_result))
+                    out["cache"] = "coalesced"
+                    return out
+            if _catalog_inflight_result is not None:
+                out = json.loads(json.dumps(_catalog_inflight_result))
+                out["cache"] = "coalesced"
+                return out
+            if _catalog_cache is not None:
+                out = json.loads(json.dumps(_catalog_cache))
+                out["cache"] = "memory"
+                out["ageSeconds"] = round(_time.time() - _catalog_cache_fetched_at, 3)
+                return out
+        return get_settings_catalog(force=force)
+
+    try:
+        catalog = discover_settings_catalog()
+        catalog["cache"] = "none"
+        catalog["ageSeconds"] = 0
+        catalog["ttlSeconds"] = CATALOG_TTL_SECONDS
+        with _catalog_lock:
+            _catalog_cache = catalog
+            _catalog_cache_fetched_at = float(catalog.get("fetchedAt") or _time.time())
+            _catalog_inflight_result = catalog
+            _catalog_inflight_error = None
+        return json.loads(json.dumps(catalog))
+    except Exception as e:  # noqa: BLE001
+        with _catalog_lock:
+            _catalog_inflight_error = e
+            if _catalog_cache is not None:
+                out = json.loads(json.dumps(_catalog_cache))
+                out["cache"] = "memory-stale"
+                out["error"] = str(e)
+                out["ageSeconds"] = round(_time.time() - _catalog_cache_fetched_at, 3)
+                return out
+        return {
+            "fetchedAt": _time.time(),
+            "fetchedAtIso": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+            "ttlSeconds": CATALOG_TTL_SECONDS,
+            "source": "error",
+            "cache": "none",
+            "error": str(e),
+            "grok": {
+                "models": [],
+                "permissionModes": [],
+                "reasoningEfforts": [],
+                "error": str(e),
+            },
+            "claude": {
+                "models": [],
+                "permissionModes": [],
+                "efforts": [],
+                "error": str(e),
+            },
+        }
+    finally:
+        with _catalog_lock:
+            if _catalog_inflight is not None:
+                _catalog_inflight.set()
+            _catalog_inflight = None
+
+
+def clear_settings_catalog_cache() -> None:
+    """Drop TTL memory cache and any in-flight bookkeeping (tests / refresh)."""
+    global _catalog_cache, _catalog_cache_fetched_at
+    global _catalog_inflight, _catalog_inflight_result, _catalog_inflight_error
+    with _catalog_lock:
+        _catalog_cache = None
+        _catalog_cache_fetched_at = 0.0
+        _catalog_inflight = None
+        _catalog_inflight_result = None
+        _catalog_inflight_error = None
+
 
 # Grok is I/O-bound (mostly waiting on the API) but each run spawns a
 # process, so we cap concurrency to protect memory and API rate limits.
@@ -417,15 +1508,17 @@ Write ONLY `{PLAN_FILE}`. Do not scaffold code or create other files."""
 # --- Streaming event → human-readable line ---------------------------------
 # Grok's --output-format streaming-json emits NDJSON with types:
 #   text / thought / end / error  (plus occasional max_turns_reached, etc.)
+# Claude Code --output-format stream-json emits system/assistant/result events.
 # Tokens arrive one chunk at a time, so we coalesce them into display lines.
 class _StreamCoalescer:
     """Buffer token-level text/thought events into skimmable log lines."""
 
-    def __init__(self, on_line: Callable[[str], None]) -> None:
+    def __init__(self, on_line: Callable[[str], None], driver_label: str = "Agent") -> None:
         self._emit = on_line
         self._text = ""
         self._thought = ""
         self._thought_shown = False
+        self._driver_label = driver_label
 
     def push(self, evt: dict) -> None:
         etype = evt.get("type")
@@ -452,10 +1545,54 @@ class _StreamCoalescer:
             if evt.get("stopReason") in ("Error", "Cancelled", "MaxTurns"):
                 self._emit("⚠ run ended early")
             else:
-                self._emit("✓ Grok finished this turn")
+                self._emit(f"✓ {self._driver_label} finished this turn")
         elif etype == "max_turns_reached":
             self._flush_all()
             self._emit("⚠ max turns reached")
+        elif etype == "assistant":
+            # Claude Code stream-json: assistant messages with content blocks.
+            self._push_claude_assistant(evt)
+        elif etype == "result":
+            self._flush_all()
+            if evt.get("is_error") or evt.get("subtype") == "error":
+                msg = (evt.get("result") or evt.get("error") or "error").strip()
+                if msg:
+                    self._emit(f"⚠ {msg}")
+            else:
+                self._emit(f"✓ {self._driver_label} finished this turn")
+        elif etype == "system" and evt.get("subtype") == "init":
+            model = evt.get("model") or ""
+            if model:
+                self._emit(f"Using model {model}")
+
+    def _push_claude_assistant(self, evt: dict) -> None:
+        msg = evt.get("message") or {}
+        content = msg.get("content") or []
+        if isinstance(content, str):
+            self._flush_thought(partial=True)
+            self._text += content
+            self._flush_text(force=False)
+            return
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                self._flush_thought(partial=True)
+                self._text += block.get("text") or ""
+                self._flush_text(force=False)
+            elif btype == "thinking":
+                self._flush_text(force=True)
+                thinking = (block.get("thinking") or "").strip()
+                if thinking and not self._thought_shown:
+                    self._emit("💭 thinking…")
+                    self._thought_shown = True
+            elif btype == "tool_use":
+                self._flush_all()
+                name = block.get("name") or "tool"
+                self._emit(f"→ {name}")
 
     def _flush_text(self, force: bool) -> None:
         if not self._text:
@@ -492,21 +1629,21 @@ class _StreamCoalescer:
         self._flush_thought(partial=False)
 
 
-# --- Running grok -----------------------------------------------------------
-def _run_grok_once(
+# --- Command construction (pure, unit-tested) -------------------------------
+def build_grok_cmd(
     prompt: str,
     cwd: Path,
-    emit: Callable[[str], None],
-    session_id: Optional[str],
-    dangerously_skip: bool,
-    permission_mode: str,
-    timeout: int,
-) -> dict:
-    """Single attempt at a headless Grok turn. See ``run_grok``."""
-    # -p / --single triggers headless mode. --always-approve is required so
-    # file writes and shell commands don't hang waiting for a TTY prompt.
+    *,
+    session_id: Optional[str] = None,
+    dangerously_skip: bool = False,
+    permission_mode: str = "acceptEdits",
+    model: str = "",
+    reasoning_effort: str = "",
+    bin_path: Optional[str] = None,
+) -> List[str]:
+    """Build the argv for a headless Grok Build turn."""
     cmd = [
-        GROK_BIN,
+        bin_path or GROK_BIN,
         "-p",
         prompt,
         "--output-format",
@@ -515,15 +1652,110 @@ def _run_grok_once(
         "--cwd",
         str(cwd),
     ]
-    # Build / improve need unrestricted tool use; plan mode can stay lighter
-    # but headless still needs auto-approve (already set above).
     if dangerously_skip or permission_mode in ("bypassPermissions", "auto"):
         cmd += ["--permission-mode", "bypassPermissions"]
+    elif permission_mode and permission_mode != "acceptEdits":
+        cmd += ["--permission-mode", permission_mode]
+    if model and str(model).strip():
+        cmd += ["--model", str(model).strip()]
+    if reasoning_effort and str(reasoning_effort).strip():
+        cmd += ["--reasoning-effort", str(reasoning_effort).strip()]
     if session_id:
         cmd += ["--resume", session_id]
+    return cmd
 
-    emit("Grok session started…" if not session_id else f"Resuming Grok session {session_id[:8]}…")
-    coalescer = _StreamCoalescer(emit)
+
+def build_claude_cmd(
+    prompt: str,
+    cwd: Path,
+    *,
+    session_id: Optional[str] = None,
+    dangerously_skip: bool = False,
+    permission_mode: str = "bypassPermissions",
+    model: str = "",
+    effort: str = "",
+    bin_path: Optional[str] = None,
+) -> List[str]:
+    """Build the argv for a headless Claude Code turn.
+
+    Claude's print mode uses ``-p`` / ``--print`` with ``stream-json`` output.
+    ``--verbose`` is required so intermediate assistant events stream live
+    rather than only the final result.
+    """
+    cmd = [
+        bin_path or CLAUDE_BIN,
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+    # cwd is the process working directory; also pass --add-dir for tool access.
+    skip = bool(dangerously_skip)
+    if skip:
+        cmd += ["--dangerously-skip-permissions"]
+    elif permission_mode:
+        cmd += ["--permission-mode", permission_mode]
+    if model and str(model).strip():
+        cmd += ["--model", str(model).strip()]
+    if effort and str(effort).strip():
+        cmd += ["--effort", str(effort).strip()]
+    if session_id:
+        cmd += ["--resume", session_id]
+    return cmd
+
+
+def build_driver_cmd(
+    driver: str,
+    prompt: str,
+    cwd: Path,
+    *,
+    settings: Optional[dict] = None,
+    session_id: Optional[str] = None,
+    dangerously_skip: bool = False,
+    permission_mode: Optional[str] = None,
+) -> List[str]:
+    """Dispatch command construction for the active driver (test entry point)."""
+    cfg = normalize_settings(settings)
+    if driver == DRIVER_CLAUDE:
+        c = cfg["claude"]
+        return build_claude_cmd(
+            prompt,
+            cwd,
+            session_id=session_id,
+            dangerously_skip=dangerously_skip or bool(c.get("dangerouslySkipPermissions")),
+            permission_mode=permission_mode or c.get("permissionMode") or "bypassPermissions",
+            model=c.get("model") or "",
+            effort=c.get("effort") or "",
+        )
+    g = cfg["grok"]
+    return build_grok_cmd(
+        prompt,
+        cwd,
+        session_id=session_id,
+        dangerously_skip=dangerously_skip,
+        permission_mode=permission_mode or g.get("permissionMode") or "acceptEdits",
+        model=g.get("model") or "",
+        reasoning_effort=g.get("reasoningEffort") or "",
+    )
+
+
+def _run_cli_once(
+    cmd: List[str],
+    cwd: Path,
+    emit: Callable[[str], None],
+    session_id: Optional[str],
+    timeout: int,
+    driver_label: str,
+    stream_kind: str,
+) -> dict:
+    """Run one headless CLI turn and normalize its NDJSON stream into log lines."""
+    emit(
+        f"{driver_label} session started…"
+        if not session_id
+        else f"Resuming {driver_label} session {session_id[:8]}…"
+    )
+    coalescer = _StreamCoalescer(emit, driver_label=driver_label)
 
     proc = subprocess.Popen(
         cmd,
@@ -540,7 +1772,6 @@ def _run_grok_once(
     )
     stderr_thread.start()
 
-    # Hard wall-clock kill so a hung run can't stall a worker forever.
     timer = threading.Timer(timeout, proc.kill)
     timer.start()
 
@@ -554,17 +1785,36 @@ def _run_grok_once(
             try:
                 evt = json.loads(line)
             except json.JSONDecodeError:
+                # Non-JSON noise (rare) — surface a short snippet.
+                if line and not line.startswith("{"):
+                    emit(line[:200])
                 continue
-            # Session id lives on the terminal `end` event (camelCase).
-            if evt.get("sessionId"):
-                result_session = evt["sessionId"]
-            if evt.get("type") == "error":
-                final_error = evt.get("message") or evt.get("data") or "error"
-            if evt.get("type") == "end":
-                stop = evt.get("stopReason") or ""
-                if stop in ("Error", "Cancelled"):
-                    final_error = final_error or f"stopped: {stop}"
-            coalescer.push(evt)
+
+            if stream_kind == "claude":
+                sid = evt.get("session_id") or evt.get("sessionId")
+                if sid:
+                    result_session = sid
+                if evt.get("type") == "result" and (
+                    evt.get("is_error") or evt.get("subtype") not in (None, "success")
+                ):
+                    final_error = (
+                        evt.get("result")
+                        or evt.get("error")
+                        or evt.get("message")
+                        or "error"
+                    )
+                coalescer.push(evt)
+            else:
+                # Grok streaming-json
+                if evt.get("sessionId"):
+                    result_session = evt["sessionId"]
+                if evt.get("type") == "error":
+                    final_error = evt.get("message") or evt.get("data") or "error"
+                if evt.get("type") == "end":
+                    stop = evt.get("stopReason") or ""
+                    if stop in ("Error", "Cancelled"):
+                        final_error = final_error or f"stopped: {stop}"
+                coalescer.push(evt)
         proc.wait()
     finally:
         timer.cancel()
@@ -572,7 +1822,8 @@ def _run_grok_once(
 
     if proc.returncode not in (0, None) and not final_error:
         detail = "".join(stderr_chunks).strip()[-500:]
-        final_error = detail or f"grok exited with code {proc.returncode}"
+        bin_name = Path(cmd[0]).name if cmd else "agent"
+        final_error = detail or f"{bin_name} exited with code {proc.returncode}"
 
     return {"sessionId": result_session, "error": final_error}
 
@@ -594,6 +1845,58 @@ def _looks_like_session_error(err: Optional[str]) -> bool:
     )
 
 
+def _run_grok_once(
+    prompt: str,
+    cwd: Path,
+    emit: Callable[[str], None],
+    session_id: Optional[str],
+    dangerously_skip: bool,
+    permission_mode: str,
+    timeout: int,
+    model: str = "",
+    reasoning_effort: str = "",
+) -> dict:
+    """Single attempt at a headless Grok turn. See ``run_grok``."""
+    cmd = build_grok_cmd(
+        prompt,
+        cwd,
+        session_id=session_id,
+        dangerously_skip=dangerously_skip,
+        permission_mode=permission_mode,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
+    return _run_cli_once(
+        cmd, cwd, emit, session_id, timeout, driver_label="Grok", stream_kind="grok"
+    )
+
+
+def _run_claude_once(
+    prompt: str,
+    cwd: Path,
+    emit: Callable[[str], None],
+    session_id: Optional[str],
+    dangerously_skip: bool,
+    permission_mode: str,
+    timeout: int,
+    model: str = "",
+    effort: str = "",
+) -> dict:
+    """Single attempt at a headless Claude Code turn."""
+    cmd = build_claude_cmd(
+        prompt,
+        cwd,
+        session_id=session_id,
+        dangerously_skip=dangerously_skip,
+        permission_mode=permission_mode,
+        model=model,
+        effort=effort,
+    )
+    return _run_cli_once(
+        cmd, cwd, emit, session_id, timeout, driver_label="Claude", stream_kind="claude"
+    )
+
+
 def run_grok(
     prompt: str,
     cwd: Path,
@@ -602,6 +1905,8 @@ def run_grok(
     permission_mode: str = "acceptEdits",
     dangerously_skip: bool = False,
     timeout: int = PLAN_TIMEOUT,
+    model: str = "",
+    reasoning_effort: str = "",
 ) -> dict:
     """Run one headless Grok turn, streaming progress via ``on_line``.
 
@@ -609,24 +1914,126 @@ def run_grok(
     live. Returns ``{sessionId, error}``. Auth is Grok's own (cached OAuth or
     ``XAI_API_KEY``) — no key wiring is needed here.
 
-    ``permission_mode`` / ``dangerously_skip`` are kept for call-site
-    compatibility with the old Claude driver. Unattended factory runs always
-    auto-approve tools (``--always-approve``); builds additionally request
-    ``bypassPermissions``.
-
     If a stored ``session_id`` fails to resume (e.g. leftover Claude session
     ids from before the swap), we retry once with a fresh session.
     """
     emit = on_line or (lambda _s: None)
     result = _run_grok_once(
-        prompt, cwd, emit, session_id, dangerously_skip, permission_mode, timeout
+        prompt,
+        cwd,
+        emit,
+        session_id,
+        dangerously_skip,
+        permission_mode,
+        timeout,
+        model=model,
+        reasoning_effort=reasoning_effort,
     )
     if result["error"] and session_id and _looks_like_session_error(result["error"]):
         emit("Session resume failed — starting a fresh Grok session…")
         result = _run_grok_once(
-            prompt, cwd, emit, None, dangerously_skip, permission_mode, timeout
+            prompt,
+            cwd,
+            emit,
+            None,
+            dangerously_skip,
+            permission_mode,
+            timeout,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
     return result
+
+
+def run_claude(
+    prompt: str,
+    cwd: Path,
+    on_line: Optional[Callable[[str], None]] = None,
+    session_id: Optional[str] = None,
+    permission_mode: str = "bypassPermissions",
+    dangerously_skip: bool = False,
+    timeout: int = PLAN_TIMEOUT,
+    model: str = "",
+    effort: str = "",
+) -> dict:
+    """Run one headless Claude Code turn, streaming progress via ``on_line``.
+
+    Uses ``--output-format stream-json --verbose``. Returns ``{sessionId, error}``.
+    Auth is Claude's own (OAuth or ``ANTHROPIC_API_KEY``).
+    """
+    emit = on_line or (lambda _s: None)
+    result = _run_claude_once(
+        prompt,
+        cwd,
+        emit,
+        session_id,
+        dangerously_skip,
+        permission_mode,
+        timeout,
+        model=model,
+        effort=effort,
+    )
+    if result["error"] and session_id and _looks_like_session_error(result["error"]):
+        emit("Session resume failed — starting a fresh Claude session…")
+        result = _run_claude_once(
+            prompt,
+            cwd,
+            emit,
+            None,
+            dangerously_skip,
+            permission_mode,
+            timeout,
+            model=model,
+            effort=effort,
+        )
+    return result
+
+
+def run_agent(
+    prompt: str,
+    cwd: Path,
+    on_line: Optional[Callable[[str], None]] = None,
+    session_id: Optional[str] = None,
+    permission_mode: Optional[str] = None,
+    dangerously_skip: bool = False,
+    timeout: int = PLAN_TIMEOUT,
+    settings: Optional[dict] = None,
+) -> dict:
+    """Run one agent turn with the currently selected driver.
+
+    All plan/build/refine/improve/consolidate jobs should call this so switching
+    drivers in settings cannot leave a job hard-coded to Grok.
+    """
+    cfg = normalize_settings(settings if settings is not None else load_settings())
+    driver = cfg["driver"]
+    emit = on_line or (lambda _s: None)
+    if driver == DRIVER_CLAUDE:
+        c = cfg["claude"]
+        emit(f"Driver: Claude Code ({c.get('model') or 'default'})")
+        return run_claude(
+            prompt,
+            cwd,
+            on_line=emit,
+            session_id=session_id,
+            permission_mode=permission_mode or c.get("permissionMode") or "bypassPermissions",
+            dangerously_skip=dangerously_skip or bool(c.get("dangerouslySkipPermissions")),
+            timeout=timeout,
+            model=c.get("model") or "",
+            effort=c.get("effort") or "",
+        )
+    g = cfg["grok"]
+    emit(f"Driver: Grok Build ({g.get('model') or 'default'})")
+    return run_grok(
+        prompt,
+        cwd,
+        on_line=emit,
+        session_id=session_id,
+        permission_mode=permission_mode or g.get("permissionMode") or "acceptEdits",
+        dangerously_skip=dangerously_skip,
+        timeout=timeout,
+        model=g.get("model") or "",
+        reasoning_effort=g.get("reasoningEffort") or "",
+    )
 
 
 # --- Serving the built concept ----------------------------------------------

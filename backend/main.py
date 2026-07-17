@@ -276,6 +276,81 @@ def update_meta_prompt(payload: MetaPromptUpdate) -> State:
     return state
 
 
+# --- Agent driver settings (Grok Build vs Claude Code) ----------------------
+class DriverSettingsUpdate(BaseModel):
+    """Partial or full settings blob from the dashboard modal."""
+    driver: Optional[str] = None
+    grok: Optional[dict] = None
+    claude: Optional[dict] = None
+
+
+@app.get("/api/settings")
+def get_settings(syncCli: bool = False) -> dict:
+    """Global agent driver + per-driver model/options (persisted).
+
+    By default returns stored settings only (fast — form can paint immediately).
+    Pass ``syncCli=1`` to also merge live CLI current models from the catalog
+    (uses the TTL cache when warm).
+    """
+    stored = agent.load_settings()
+    if not syncCli:
+        return stored
+    catalog = agent.get_settings_catalog()
+    return agent.apply_cli_current_to_settings(stored, catalog, follow_cli=False)
+
+
+@app.put("/api/settings")
+def put_settings(payload: DriverSettingsUpdate) -> dict:
+    """Persist driver choice and model/options; jobs pick this up on next run."""
+    current = agent.load_settings()
+    patch = payload.model_dump(exclude_none=True)
+    if "driver" in patch:
+        current["driver"] = patch["driver"]
+    for key in ("grok", "claude"):
+        if key in patch and isinstance(patch[key], dict):
+            current.setdefault(key, {}).update(patch[key])
+    return agent.save_settings(current)
+
+
+@app.get("/api/settings/catalog")
+def get_settings_catalog(force: bool = False) -> dict:
+    """Live-discovered dropdown options (TTL-cached; ``force=1`` re-polls).
+
+    Models/enums from CLI config files + headless probes, including
+    ``currentModel`` per driver.
+    """
+    return agent.get_settings_catalog(force=force)
+
+
+@app.get("/api/settings/bootstrap")
+def bootstrap_settings() -> dict:
+    """Optional combined poll: catalog + settings with live CLI models.
+
+    The modal prefers parallel GET /settings + GET /catalog so a missing
+    bootstrap route (older server) still loads. This endpoint remains for
+    clients that want a single round-trip.
+    """
+    catalog = agent.get_settings_catalog()
+    settings = agent.apply_cli_current_to_settings(
+        agent.load_settings(), catalog, follow_cli=True
+    )
+    return {"catalog": catalog, "settings": settings}
+
+
+@app.post("/api/settings/catalog/refresh")
+def refresh_settings_catalog() -> dict:
+    """Bust TTL and re-poll CLIs.
+
+    Returns both the catalog and settings with models synced to live CLI
+    current (so the modal can update the selected model on refresh).
+    """
+    catalog = agent.get_settings_catalog(force=True)
+    settings = agent.apply_cli_current_to_settings(
+        agent.load_settings(), catalog, follow_cli=True
+    )
+    return {"catalog": catalog, "settings": settings}
+
+
 @app.post("/api/topics", response_model=Topic)
 def create_topic(payload: TopicCreate) -> Topic:
     with _lock:
@@ -423,7 +498,7 @@ def _plan_job(topic_id: str, feedback: Optional[str] = None) -> None:
         context = "\n".join(p for p in (blurb, notes) if p)
         prompt = agent.build_plan_prompt(title, context, meta)
 
-    result = agent.run_grok(prompt, cwd, on_line=emit, session_id=session_id)
+    result = agent.run_agent(prompt, cwd, on_line=emit, session_id=session_id)
     plan_path = cwd / agent.PLAN_FILE
     plan_text = plan_path.read_text() if plan_path.exists() else ""
 
@@ -464,7 +539,7 @@ def _consolidate_job(new_id: str, src_plans: list, src_ids: List[str], meta: str
     emit = lambda line: _log_append(new_id, line)
     cwd = agent.topic_dir(slug)
     emit(f"Consolidating {len(src_plans)} plans into one unified plan…")
-    result = agent.run_grok(
+    result = agent.run_agent(
         agent.consolidate_prompt(src_plans, meta), cwd, on_line=emit
     )
     plan_path = cwd / agent.PLAN_FILE
@@ -515,7 +590,7 @@ def _build_job(topic_id: str) -> None:
     emit("Copying the concept template…")
     agent.copy_template(cwd)
     emit("Building the app from the approved plan…")
-    result = agent.run_grok(
+    result = agent.run_agent(
         agent.build_prompt(),
         cwd,
         on_line=emit,
@@ -557,7 +632,7 @@ def _improve_job(topic_id: str, request: str) -> None:
     emit = lambda line: _log_append(topic_id, line)
     cwd = _work_dir(topic)
     emit(f"Requesting improvement: {request}")
-    result = agent.run_grok(
+    result = agent.run_agent(
         agent.improve_prompt(request),
         cwd,
         on_line=emit,

@@ -42,6 +42,64 @@ export interface State {
   topics: Topic[];
 }
 
+/** Agent driver: headless Grok Build or Claude Code CLI. */
+export type AgentDriver = "grok" | "claude";
+
+export interface GrokDriverSettings {
+  model: string;
+  permissionMode: string;
+  reasoningEffort: string;
+}
+
+export interface ClaudeDriverSettings {
+  model: string;
+  permissionMode: string;
+  effort: string;
+  dangerouslySkipPermissions: boolean;
+}
+
+export interface FactorySettings {
+  driver: AgentDriver;
+  grok: GrokDriverSettings;
+  claude: ClaudeDriverSettings;
+}
+
+/** One dropdown option from live CLI discovery. */
+export interface CatalogOption {
+  value: string;
+  label: string;
+  default?: boolean;
+}
+
+export interface DriverCatalog {
+  driver?: string;
+  models: CatalogOption[];
+  defaultModel?: string;
+  /** Live CLI current/default model id (e.g. fable, grok-4.5). */
+  currentModel?: string;
+  currentLabel?: string;
+  permissionModes: CatalogOption[];
+  reasoningEfforts?: CatalogOption[];
+  efforts?: CatalogOption[];
+  error?: string | null;
+  probes?: Record<string, unknown>;
+}
+
+/** Live-discovered option catalogs (TTL-cached on the server). */
+export interface SettingsCatalog {
+  fetchedAt: number;
+  fetchedAtIso: string;
+  elapsedMs?: number;
+  ttlSeconds?: number;
+  source: string;
+  cache?: string;
+  ageSeconds?: number;
+  stale?: boolean;
+  error?: string | null;
+  grok: DriverCatalog;
+  claude: DriverCatalog;
+}
+
 /** Prepaid $ remaining from console.x.ai (Management API). */
 export interface Credits {
   ok: boolean;
@@ -172,6 +230,39 @@ export const api = {
 
   getCredits: (force = false) =>
     fetch(`/api/credits${force ? "?force=1" : ""}`).then(json<Credits>),
+
+  getSettings: () => fetch("/api/settings").then(json<FactorySettings>),
+
+  setSettings: (settings: Partial<FactorySettings>) =>
+    fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    }).then(json<FactorySettings>),
+
+  /** Live CLI-discovered models/enums (TTL-cached; force re-polls). */
+  getSettingsCatalog: (force = false) =>
+    fetch(`/api/settings/catalog${force ? "?force=1" : ""}`).then(
+      json<SettingsCatalog>
+    ),
+
+  /**
+   * Optional combined poll (catalog + settings). Not required for open —
+   * the modal uses getSettings + getSettingsCatalog so older servers work.
+   */
+  bootstrapSettings: () =>
+    fetch("/api/settings/bootstrap").then(
+      json<{ catalog: SettingsCatalog; settings: FactorySettings }>
+    ),
+
+  /**
+   * Bust TTL and re-poll CLIs. Returns catalog + settings with models synced
+   * to the live CLI current selection.
+   */
+  refreshSettingsCatalog: () =>
+    fetch("/api/settings/catalog/refresh", { method: "POST" }).then(
+      json<{ catalog: SettingsCatalog; settings: FactorySettings }>
+    ),
 };
 
 /** URL where a built concept is served (via the backend / dev proxy). */

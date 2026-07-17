@@ -5,6 +5,8 @@ backend/.venv/
 backend/__pycache__/
 backend/data.json
 backend/usage.json
+backend/settings.json
+backend/settings_catalog_cache.json
 backend/workspace/
 fullstack/
 
