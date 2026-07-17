@@ -9,6 +9,7 @@ backend/settings.json
 backend/settings_catalog_cache.json
 backend/.cli_help_cache.json
 backend/workspace/
+backend/runs/
 fullstack/
 
 # Node

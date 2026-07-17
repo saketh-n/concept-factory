@@ -82,6 +82,16 @@ anything.
 - **Resilient headless runs.** Concurrency-capped executor, per-run wall-clock kill
   timers, session-resume with automatic fresh-session fallback, and NDJSON stream
   coalescing so the dashboard shows live agent narration.
+- **Every run is instrumented and persisted.** Each plan/build/improve run writes
+  `backend/runs/<run_id>/` — `run.json` (duration, tokens in/out, dollar cost,
+  driver+model, turns/tool calls, retries, verification-gate outcomes),
+  `events.ndjson` (the raw agent stream, replayable in other tools), and `log.txt`
+  (the human-readable session log). The dashboard's **Runs** view charts cost,
+  duration, tokens, gate pass/fail, and per-level validator pass rates, with
+  drill-in log/event viewers and one-click JSON/NDJSON/TXT export
+  (`GET /api/runs`, `/api/runs/{id}/export`). Gates are harness-run: `npm run
+  lint`, the production build, and a validator that auto-plays every game level's
+  canonical answer through the concept's own pure `checkAnswer`.
 - **Full-stack concepts too.** Concepts with their own backends run on demand from
   copy-on-write runtime copies on remapped ports (`backend/launcher.py`).
 
@@ -119,9 +129,9 @@ startup.
 
 ## Roadmap
 
-- **Deeper eval harness** — harness-side validator runs across every game level,
-  Playwright screenshot capture of built apps, and rubric-based scoring against the
-  review checklist, surfaced in the dashboard
+- **Deeper eval harness** — the per-level validator + gate metrics now ship in the
+  Runs dashboard; still to come: Playwright screenshot capture of built apps and
+  rubric-based scoring against the review checklist
 - **Approve → publish worker** — the deterministic, non-agent GitHub push worker
   specified in `meta-agent/ARCHITECTURE.md`
 - **Hosted deployment** — public gallery of built concepts, containerized agent runs,

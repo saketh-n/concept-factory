@@ -74,6 +74,20 @@ export const IconMap = (p: IconProps) => (
   </svg>
 );
 
+export const IconChart = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M3 3v18h18" />
+    <path d="M7 15v3m5-8v8m5-13v13" />
+  </svg>
+);
+
+export const IconDownload = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M12 3v12m0 0 4-4m-4 4-4-4" />
+    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+  </svg>
+);
+
 export const IconRows = (p: IconProps) => (
   <svg {...base(p)}>
     <rect x="3" y="4" width="18" height="7" rx="1.5" />

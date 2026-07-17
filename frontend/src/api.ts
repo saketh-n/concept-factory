@@ -121,6 +121,87 @@ export interface Credits {
   limitTokens?: number | null;
 }
 
+// --- Run instrumentation (persisted per-run logs + metrics) -----------------
+export type RunKind = "plan" | "refine" | "consolidate" | "build" | "improve";
+export type RunStatus = "running" | "success" | "error";
+export type GateStatus = "pass" | "fail" | "skipped" | "error";
+
+export interface LevelResult {
+  id: number;
+  topic: string;
+  ok: boolean;
+  reason: string;
+}
+
+export interface GateResult {
+  status: GateStatus;
+  detail?: string;
+  /** Validator gate only: auto-played level results. */
+  passed?: number;
+  total?: number;
+  passRate?: number;
+  levels?: LevelResult[];
+}
+
+export interface RunRecord {
+  id: string;
+  kind: RunKind | string;
+  topicId: string;
+  slug: string;
+  title: string;
+  driver: string;
+  driverLabel: string;
+  model: string;
+  effort: string;
+  permissionMode: string;
+  status: RunStatus;
+  error: string;
+  sessionId: string;
+  startedAt: number;
+  startedAtIso: string;
+  endedAt: number | null;
+  endedAtIso: string | null;
+  durationSeconds: number | null;
+  tokensIn: number;
+  tokensOut: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  totalTokens: number;
+  costUsd: number | null;
+  turns: number;
+  toolCalls: number;
+  retries: number;
+  attempts: number;
+  exitCode: number | null;
+  eventCount: number;
+  logLines: number;
+  gates: { lint: GateResult; build: GateResult; validator: GateResult };
+}
+
+export interface RunMetrics {
+  totalRuns: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  successRate: number | null;
+  totalCostUsd: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  totalTokens: number;
+  totalToolCalls: number;
+  totalRetries: number;
+  avgDurationSeconds: number | null;
+  gates: Record<
+    "lint" | "build" | "validator",
+    { pass: number; fail: number; skipped: number }
+  >;
+  avgValidatorPassRate: number | null;
+  byModel: Record<
+    string,
+    { runs: number; costUsd: number; tokens: number; success: number; finished: number }
+  >;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(`Request failed: ${res.status}`);
   return res.json() as Promise<T>;
@@ -263,7 +344,35 @@ export const api = {
     fetch("/api/settings/catalog/refresh", { method: "POST" }).then(
       json<{ catalog: SettingsCatalog; settings: FactorySettings }>
     ),
+
+  /** Structured per-run records, newest first. */
+  listRuns: (opts: { topicId?: string; kind?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.topicId) params.set("topicId", opts.topicId);
+    if (opts.kind) params.set("kind", opts.kind);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return fetch(`/api/runs${qs ? `?${qs}` : ""}`).then(
+      json<{ runs: RunRecord[] }>
+    );
+  },
+
+  getRun: (id: string) => fetch(`/api/runs/${id}`).then(json<RunRecord>),
+
+  getRunEvents: (id: string, offset = 0, limit = 500) =>
+    fetch(`/api/runs/${id}/events?offset=${offset}&limit=${limit}`).then(
+      json<{ events: Record<string, unknown>[]; offset: number; total: number }>
+    ),
+
+  getRunLog: (id: string) =>
+    fetch(`/api/runs/${id}/log`).then(json<{ lines: string[] }>),
+
+  getRunMetrics: () => fetch("/api/runs/metrics").then(json<RunMetrics>),
 };
+
+/** Download URL for a run export (json bundle | raw ndjson events | txt log). */
+export const runExportUrl = (id: string, format: "json" | "ndjson" | "txt") =>
+  `/api/runs/${id}/export?format=${format}`;
 
 /** URL where a built concept is served (via the backend / dev proxy). */
 export const conceptUrl = (slug: string) => `/concepts/${slug}/`;

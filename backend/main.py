@@ -22,6 +22,7 @@ import os
 
 import agent
 import launcher
+import runs
 
 DATA_FILE = Path(__file__).parent / "data.json"
 _lock = threading.Lock()
@@ -59,6 +60,34 @@ def _log_append(topic_id: str, line: str) -> None:
 def _log_get(topic_id: str) -> list:
     with _LOGS_LOCK:
         return list(_LOGS.get(topic_id, []))
+
+
+def _start_run(kind: str, topic_id: str, slug: str, title: str):
+    """Create a persisted run record + an emitter that feeds both the live
+    in-memory log (dashboard stream) and the run's on-disk log.txt."""
+    recorder = runs.new_run(kind=kind, topicId=topic_id, slug=slug, title=title)
+
+    def emit(line: str) -> None:
+        _log_append(topic_id, line)
+        recorder.line(line)
+
+    return recorder, emit
+
+
+def _run_verification_gates(recorder, cwd: Path, emit, build_ok: bool) -> None:
+    """Harness-side gates after a build/improve run: build result (already
+    known from finalize_build), then lint, then the level validator."""
+    recorder.set_gate(
+        "build",
+        {"status": "pass" if build_ok else "fail",
+         "detail": "" if build_ok else "servable bundle failed to compile"},
+    )
+    if not build_ok:
+        recorder.set_gate("lint", {"status": "skipped", "detail": "build failed"})
+        recorder.set_gate("validator", {"status": "skipped", "detail": "build failed"})
+        return
+    recorder.set_gate("lint", agent.run_lint_gate(cwd, emit))
+    recorder.set_gate("validator", agent.run_validator_gate(cwd, emit))
 
 
 # --- Models -----------------------------------------------------------------
@@ -514,7 +543,9 @@ def _plan_job(topic_id: str, feedback: Optional[str] = None) -> None:
         save_state(state)
 
     _log_reset(topic_id)
-    emit = lambda line: _log_append(topic_id, line)
+    recorder, emit = _start_run(
+        "refine" if feedback is not None else "plan", topic_id, slug, title
+    )
     cwd = agent.topic_dir(slug)
     if feedback is not None:
         # Sync any manual edits to disk so the agent refines the latest text.
@@ -527,18 +558,23 @@ def _plan_job(topic_id: str, feedback: Optional[str] = None) -> None:
         context = "\n".join(p for p in (blurb, notes) if p)
         prompt = agent.build_plan_prompt(title, context, meta)
 
-    result = agent.run_agent(prompt, cwd, on_line=emit, session_id=session_id)
+    result = agent.run_agent(
+        prompt, cwd, on_line=emit, session_id=session_id, recorder=recorder
+    )
     plan_path = cwd / agent.PLAN_FILE
     plan_text = plan_path.read_text() if plan_path.exists() else ""
 
     if result["error"] or not plan_text.strip():
+        error = result["error"] or "Agent produced no PLAN.md"
+        recorder.finish("error", error=error, exit_code=result.get("exitCode"))
         _set(
             topic_id,
             planStatus="error",
-            planError=result["error"] or "Agent produced no PLAN.md",
+            planError=error,
             sessionId=result["sessionId"] or "",
         )
     else:
+        recorder.finish("success", exit_code=result.get("exitCode"))
         _set(
             topic_id,
             planStatus="ready",
@@ -565,24 +601,30 @@ def _consolidate_job(new_id: str, src_plans: list, src_ids: List[str], meta: str
         save_state(state)
 
     _log_reset(new_id)
-    emit = lambda line: _log_append(new_id, line)
+    with _lock:
+        t = _find(new_id)
+        run_title = t.title if t else ""
+    recorder, emit = _start_run("consolidate", new_id, slug, run_title)
     cwd = agent.topic_dir(slug)
     emit(f"Consolidating {len(src_plans)} plans into one unified plan…")
     result = agent.run_agent(
-        agent.consolidate_prompt(src_plans, meta), cwd, on_line=emit
+        agent.consolidate_prompt(src_plans, meta), cwd, on_line=emit, recorder=recorder
     )
     plan_path = cwd / agent.PLAN_FILE
     plan_text = plan_path.read_text() if plan_path.exists() else ""
 
     if result["error"] or not plan_text.strip():
+        error = result["error"] or "Agent produced no PLAN.md"
+        recorder.finish("error", error=error, exit_code=result.get("exitCode"))
         _set(
             new_id,
             planStatus="error",
-            planError=result["error"] or "Agent produced no PLAN.md",
+            planError=error,
             sessionId=result["sessionId"] or "",
         )
         return
 
+    recorder.finish("success", exit_code=result.get("exitCode"))
     title = agent.plan_title(plan_text)
     with _lock:
         topic = _find(new_id)
@@ -612,7 +654,7 @@ def _build_job(topic_id: str) -> None:
         save_state(state)
 
     _log_reset(topic_id)
-    emit = lambda line: _log_append(topic_id, line)
+    recorder, emit = _start_run("build", topic_id, slug, title)
     cwd = agent.topic_dir(slug)
     if plan_text:
         (cwd / agent.PLAN_FILE).write_text(plan_text)
@@ -625,23 +667,26 @@ def _build_job(topic_id: str) -> None:
         on_line=emit,
         dangerously_skip=True,
         timeout=agent.BUILD_TIMEOUT,
+        recorder=recorder,
     )
     if result["error"]:
+        recorder.finish("error", error=result["error"], exit_code=result.get("exitCode"))
         _set(topic_id, planStatus="error", planError=result["error"])
         return
 
     # Re-build with the right base path so we can serve it under /concepts/<slug>/.
     emit("Preparing the concept for viewing…")
-    if agent.finalize_build(cwd, f"/concepts/{slug}/", emit):
+    build_ok = agent.finalize_build(cwd, f"/concepts/{slug}/", emit)
+    _run_verification_gates(recorder, cwd, emit, build_ok)
+    if build_ok:
         emit("Committing initial build to git…")
         agent.git_commit(cwd, f"Build: {title}")
+        recorder.finish("success", exit_code=result.get("exitCode"))
         _set(topic_id, planStatus="built", planError="")
     else:
-        _set(
-            topic_id,
-            planStatus="error",
-            planError="Build succeeded but the servable bundle failed to compile.",
-        )
+        error = "Build succeeded but the servable bundle failed to compile."
+        recorder.finish("error", error=error, exit_code=result.get("exitCode"))
+        _set(topic_id, planStatus="error", planError=error)
 
 
 def _improve_job(topic_id: str, request: str) -> None:
@@ -658,7 +703,7 @@ def _improve_job(topic_id: str, request: str) -> None:
         save_state(state)
 
     _log_reset(topic_id)
-    emit = lambda line: _log_append(topic_id, line)
+    recorder, emit = _start_run("improve", topic_id, slug, topic.title)
     cwd = _work_dir(topic)
     emit(f"Requesting improvement: {request}")
     result = agent.run_agent(
@@ -668,6 +713,7 @@ def _improve_job(topic_id: str, request: str) -> None:
         session_id=session_id,
         dangerously_skip=True,
         timeout=agent.BUILD_TIMEOUT,
+        recorder=recorder,
     )
     if result["error"]:
         # The agent's own `npm run build` (default base '/') may have already
@@ -675,6 +721,7 @@ def _improve_job(topic_id: str, request: str) -> None:
         # the correct base so a failed improve never leaves a 404-ing bundle.
         if not fullstack:
             agent.finalize_build(cwd, f"/concepts/{slug}/", emit)
+        recorder.finish("error", error=result["error"], exit_code=result.get("exitCode"))
         _set(topic_id, planStatus="error", planError=result["error"],
              sessionId=result["sessionId"] or "")
         return
@@ -684,18 +731,25 @@ def _improve_job(topic_id: str, request: str) -> None:
     if fullstack:
         emit("Committing changes to git…")
         agent.git_commit(cwd, f"Improve: {request}")
+        recorder.set_gate("lint", agent.run_lint_gate(cwd, emit))
+        recorder.set_gate("validator", agent.run_validator_gate(cwd, emit))
+        recorder.finish("success", exit_code=result.get("exitCode"))
         _set(topic_id, planStatus="built", planError="", sessionId=result["sessionId"] or "")
         emit("✓ Saved. Relaunch the concept to see the changes.")
         return
 
     emit("Rebuilding the servable bundle…")
-    if agent.finalize_build(cwd, f"/concepts/{slug}/", emit):
+    build_ok = agent.finalize_build(cwd, f"/concepts/{slug}/", emit)
+    _run_verification_gates(recorder, cwd, emit, build_ok)
+    if build_ok:
         emit("Committing changes to git…")
         agent.git_commit(cwd, f"Improve: {request}")
+        recorder.finish("success", exit_code=result.get("exitCode"))
         _set(topic_id, planStatus="built", planError="", sessionId=result["sessionId"] or "")
     else:
-        _set(topic_id, planStatus="error",
-             planError="Improvement broke the build; nothing was committed.")
+        error = "Improvement broke the build; nothing was committed."
+        recorder.finish("error", error=error, exit_code=result.get("exitCode"))
+        _set(topic_id, planStatus="error", planError=error)
 
 
 def _revert_job(topic_id: str, commit_hash: str) -> None:
@@ -917,6 +971,64 @@ def get_log(topic_id: str) -> dict:
         topic = _find(topic_id)
         status = topic.planStatus if topic else "none"
     return {"status": status, "lines": _log_get(topic_id)}
+
+
+# --- Run instrumentation (persisted per-run logs + metrics) ------------------
+@app.get("/api/runs/metrics")
+def run_metrics() -> dict:
+    """Aggregates for the metrics dashboard (KPIs, gate outcomes, per-model)."""
+    return runs.metrics_summary()
+
+
+@app.get("/api/runs")
+def list_runs(topicId: Optional[str] = None, kind: Optional[str] = None,
+              limit: int = 200) -> dict:
+    """Structured per-run records, newest first."""
+    return {"runs": runs.list_runs(topic_id=topicId, kind=kind, limit=limit)}
+
+
+@app.get("/api/runs/{run_id}")
+def get_run(run_id: str) -> dict:
+    rec = runs.get_run(run_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return rec
+
+
+@app.get("/api/runs/{run_id}/events")
+def get_run_events(run_id: str, offset: int = 0, limit: int = 500) -> dict:
+    """Raw stream events (the persisted session context), paginated."""
+    if not runs.get_run(run_id):
+        raise HTTPException(status_code=404, detail="Run not found")
+    return runs.run_events(run_id, offset=offset, limit=limit)
+
+
+@app.get("/api/runs/{run_id}/log")
+def get_run_log(run_id: str) -> dict:
+    """The persisted human-readable log for this run."""
+    if not runs.get_run(run_id):
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"lines": runs.run_log_text(run_id).splitlines()}
+
+
+@app.get("/api/runs/{run_id}/export")
+def export_run(run_id: str, format: str = "json") -> Response:
+    """Download a run for debugging in another tool.
+
+    ``format=json`` → self-contained bundle (record + events + log);
+    ``format=ndjson`` → raw event stream; ``format=txt`` → readable log.
+    """
+    if format not in ("json", "ndjson", "txt"):
+        raise HTTPException(status_code=400, detail="format must be json|ndjson|txt")
+    exported = runs.export_run(run_id, fmt=format)
+    if not exported:
+        raise HTTPException(status_code=404, detail="Run not found")
+    filename, media_type, payload = exported
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # --- Full-stack concept apps (launched on demand) ---------------------------

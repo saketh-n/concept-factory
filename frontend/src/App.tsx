@@ -7,7 +7,9 @@ import PlanModal from "./components/PlanModal";
 import SettingsModal from "./components/SettingsModal";
 import Workbench, { isPlanMode } from "./components/Workbench";
 import CreditsHud from "./components/CreditsHud";
+import RunsDashboard from "./components/RunsDashboard";
 import {
+  IconChart,
   IconMap,
   IconMerge,
   IconPlus,
@@ -22,14 +24,14 @@ import {
 
 const BUSY: Topic["planStatus"][] = ["queued", "planning", "building"];
 
-type BoardView = "cards" | "map";
+type BoardView = "cards" | "map" | "runs";
 const VIEW_LS = "conceptFactory.boardView";
 const WORKBENCH_LS = "conceptFactory.workbenchOpen";
 
 function loadView(): BoardView {
   try {
     const v = localStorage.getItem(VIEW_LS);
-    if (v === "cards" || v === "map") return v;
+    if (v === "cards" || v === "map" || v === "runs") return v;
   } catch {
     /* ignore */
   }
@@ -355,7 +357,7 @@ export default function App() {
 
       <main className="mx-auto max-w-6xl px-4 pb-24 pt-6 sm:px-6">
         {/* Toolbar: view switch · pipeline census · search · library actions */}
-        {!loading && topics.length > 0 && (
+        {!loading && (topics.length > 0 || view === "runs") && (
           <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-3">
             <div className="view-toggle" role="group" aria-label="Board view">
               <button
@@ -383,6 +385,16 @@ export default function App() {
                   </span>
                 ) : null}
               </button>
+              <button
+                type="button"
+                onClick={() => setView("runs")}
+                aria-pressed={view === "runs"}
+                className={view === "runs" ? "is-active" : ""}
+                title="Run metrics, logs, and verification gates"
+              >
+                <IconChart size={13} />
+                Runs
+              </button>
             </div>
 
             <div
@@ -409,32 +421,34 @@ export default function App() {
             </div>
 
             <span className="ml-auto flex items-center gap-2">
-              <span className="relative flex items-center">
-                <span
-                  className="pointer-events-none absolute left-2.5 text-slate-500"
-                  aria-hidden
-                >
-                  <IconSearch size={13} />
-                </span>
-                <input
-                  className="field w-44 py-1.5 pl-8 pr-7 text-[12.5px] transition-all focus:w-56 sm:w-48"
-                  placeholder={view === "map" ? "Search worlds…" : "Search cards…"}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") setSearch("");
-                  }}
-                />
-                {search && (
-                  <button
-                    onClick={() => setSearch("")}
-                    title="Clear search"
-                    className="absolute right-2 text-slate-500 transition-colors hover:text-slate-300"
+              {view !== "runs" && (
+                <span className="relative flex items-center">
+                  <span
+                    className="pointer-events-none absolute left-2.5 text-slate-500"
+                    aria-hidden
                   >
-                    <IconX size={12} />
-                  </button>
-                )}
-              </span>
+                    <IconSearch size={13} />
+                  </span>
+                  <input
+                    className="field w-44 py-1.5 pl-8 pr-7 text-[12.5px] transition-all focus:w-56 sm:w-48"
+                    placeholder={view === "map" ? "Search worlds…" : "Search cards…"}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setSearch("");
+                    }}
+                  />
+                  {search && (
+                    <button
+                      onClick={() => setSearch("")}
+                      title="Clear search"
+                      className="absolute right-2 text-slate-500 transition-colors hover:text-slate-300"
+                    >
+                      <IconX size={12} />
+                    </button>
+                  )}
+                </span>
+              )}
 
               <button
                 onClick={() => setIntakeOpen((o) => !o)}
@@ -522,6 +536,8 @@ export default function App() {
                 />
               ))}
             </div>
+          ) : view === "runs" ? (
+            <RunsDashboard />
           ) : topics.length === 0 ? (
             <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-white/10 px-6 py-14 text-center">
               <LogoMark size={34} />
