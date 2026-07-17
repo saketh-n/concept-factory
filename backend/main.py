@@ -64,8 +64,19 @@ def _log_get(topic_id: str) -> list:
 
 def _start_run(kind: str, topic_id: str, slug: str, title: str):
     """Create a persisted run record + an emitter that feeds both the live
-    in-memory log (dashboard stream) and the run's on-disk log.txt."""
-    recorder = runs.new_run(kind=kind, topicId=topic_id, slug=slug, title=title)
+    in-memory log (dashboard stream) and the run's on-disk log.txt.
+
+    ``source=concept-factory`` marks the run as app-invoked so the metrics
+    dashboard lists it; ad-hoc ``runs.new_run`` calls without that source are
+    never shown as if they were user agent sessions.
+    """
+    recorder = runs.new_run(
+        kind=kind,
+        topicId=topic_id,
+        slug=slug,
+        title=title,
+        source=runs.SOURCE_APP,
+    )
 
     def emit(line: str) -> None:
         _log_append(topic_id, line)

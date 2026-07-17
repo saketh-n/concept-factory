@@ -36,12 +36,23 @@ _FLUSH_INTERVAL = 1.5
 # Runs are small JSON files; cap the events a single API page returns.
 EVENTS_PAGE_CAP = 2000
 
+# Only runs created via the Concept Factory app agent path (plan / refine /
+# consolidate / build / improve) are listed on the metrics dashboard.
+# Ad-hoc re-extracts, verification clones, and seed scripts must set another
+# source (or leave it blank) so they never pollute /api/runs.
+SOURCE_APP = "concept-factory"
+
 _index_lock = threading.Lock()
 _index: Optional[Dict[str, dict]] = None  # run_id -> run record (summary cache)
 
 
 def _iso(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def is_dashboard_run(rec: dict) -> bool:
+    """True when this record should appear in list/metrics (app-invoked only)."""
+    return (rec.get("source") or "") == SOURCE_APP
 
 
 def _new_record(meta: dict) -> dict:
@@ -52,6 +63,10 @@ def _new_record(meta: dict) -> dict:
         "topicId": meta.get("topicId") or "",
         "slug": meta.get("slug") or "",
         "title": meta.get("title") or "",
+        # source: only SOURCE_APP runs are listed on the metrics dashboard.
+        # Default empty so ad-hoc new_run() calls (tests, re-extract scripts)
+        # never show up as if they were user-invoked agent sessions.
+        "source": meta.get("source") or "",
         "driver": meta.get("driver") or "",
         "driverLabel": meta.get("driverLabel") or "",
         "model": meta.get("model") or "",
@@ -209,9 +224,20 @@ class RunRecorder:
                 rec["cacheCreationTokens"] += int(
                     usage.get("cache_creation_input_tokens") or 0
                 )
-            cost = evt.get("total_cost_usd")
-            if isinstance(cost, (int, float)):
-                rec["costUsd"] = round((rec["costUsd"] or 0.0) + float(cost), 6)
+            self._apply_event_cost(evt)
+            turns = evt.get("num_turns")
+            if isinstance(turns, int) and turns > 0:
+                self._turns_reported += turns
+
+        # Grok Build: final `end` event carries total_cost_usd /
+        # total_cost_usd_ticks at the top level. The nested usage object often
+        # has token counts only (no cost_in_usd_ticks), so cost must be read
+        # here — not only via the attempt-usage fold below.
+        end_cost_applied = False
+        if etype == "end":
+            before = rec.get("costUsd")
+            self._apply_event_cost(evt)
+            end_cost_applied = rec.get("costUsd") != before
             turns = evt.get("num_turns")
             if isinstance(turns, int) and turns > 0:
                 self._turns_reported += turns
@@ -219,9 +245,37 @@ class RunRecorder:
         # Grok: usage snapshots (cumulative within an attempt) on any event.
         usage = evt.get("usage")
         if etype != "result" and isinstance(usage, dict) and usage:
+            # If event-level cost already landed, strip usage ticks so finish()
+            # does not double-count the same spend.
+            if end_cost_applied:
+                usage = {
+                    k: v
+                    for k, v in usage.items()
+                    if k not in ("cost_in_usd_ticks", "costInUsdTicks")
+                }
             self._attempt_usage = usage
 
         self._recompute_totals()
+
+    def _apply_event_cost(self, evt: dict) -> None:
+        """Fold event-level cost (dollars or ticks) into the run record.
+
+        Prefer ``total_cost_usd`` when present; otherwise scale
+        ``total_cost_usd_ticks`` / ``totalCostUsdTicks``. Does not touch
+        usage-block ``cost_in_usd_ticks`` (handled by ``_fold_attempt_usage``).
+        """
+        rec = self.record
+        cost = evt.get("total_cost_usd")
+        if isinstance(cost, (int, float)):
+            rec["costUsd"] = round((rec["costUsd"] or 0.0) + float(cost), 6)
+            return
+        ticks = evt.get("total_cost_usd_ticks")
+        if ticks is None:
+            ticks = evt.get("totalCostUsdTicks")
+        if isinstance(ticks, (int, float)) and ticks:
+            rec["costUsd"] = round(
+                (rec["costUsd"] or 0.0) + float(ticks) / _USD_TICKS_PER_DOLLAR, 6
+            )
 
     def _fold_attempt_usage(self) -> None:
         """Add the current attempt's (cumulative) Grok usage into the totals."""
@@ -342,7 +396,15 @@ def list_runs(
     topic_id: Optional[str] = None,
     kind: Optional[str] = None,
     limit: int = 200,
+    *,
+    app_only: bool = True,
 ) -> List[dict]:
+    """List run records for the dashboard.
+
+    By default only Concept Factory app-invoked runs (``source ==
+    concept-factory``) are returned — ad-hoc re-extracts and external
+    tooling that wrote into RUNS_DIR are excluded.
+    """
     idx = _load_index()
     with _index_lock:
         # Drop ghosts whose directory was deleted externally (manual cleanup,
@@ -354,6 +416,8 @@ def list_runs(
         for rid in stale:
             del idx[rid]
         runs = [dict(r) for r in idx.values()]
+    if app_only:
+        runs = [r for r in runs if is_dashboard_run(r)]
     if topic_id:
         runs = [r for r in runs if r.get("topicId") == topic_id]
     if kind:
@@ -425,9 +489,69 @@ def export_run(run_id: str, fmt: str = "json") -> Optional[tuple]:
     )
 
 
+def reparse_cost_from_events(run_id: str) -> Optional[float]:
+    """Re-derive ``costUsd`` from a run's own events.ndjson (end/result).
+
+    Used to backfill records that finished before event-level Grok cost was
+    extracted. Returns the new cost (or None if no cost found). Does not
+    invent cost from another run's stream.
+    """
+    path = RUNS_DIR / run_id / "events.ndjson"
+    if not path.is_file():
+        return None
+    cost: Optional[float] = None
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(evt, dict):
+                continue
+            etype = evt.get("type")
+            if etype not in ("end", "result"):
+                continue
+            c = evt.get("total_cost_usd")
+            if isinstance(c, (int, float)):
+                cost = round((cost or 0.0) + float(c), 6)
+                continue
+            ticks = evt.get("total_cost_usd_ticks")
+            if ticks is None:
+                ticks = evt.get("totalCostUsdTicks")
+            if isinstance(ticks, (int, float)) and ticks:
+                cost = round(
+                    (cost or 0.0) + float(ticks) / _USD_TICKS_PER_DOLLAR, 6
+                )
+            else:
+                usage = evt.get("usage") or {}
+                if isinstance(usage, dict):
+                    ut = usage.get("cost_in_usd_ticks") or usage.get("costInUsdTicks")
+                    if isinstance(ut, (int, float)) and ut:
+                        cost = round(
+                            (cost or 0.0) + float(ut) / _USD_TICKS_PER_DOLLAR, 6
+                        )
+    if cost is None:
+        return None
+    rec = get_run(run_id)
+    if not rec:
+        return None
+    rec["costUsd"] = cost
+    # Persist + refresh index
+    meta_path = RUNS_DIR / run_id / "run.json"
+    try:
+        meta_path.write_text(json.dumps(rec, indent=2) + "\n")
+    except OSError:
+        return cost
+    _index_put(rec)
+    return cost
+
+
 def metrics_summary() -> dict:
-    """Aggregates for the dashboard KPI tiles and charts."""
-    runs = list_runs(limit=1000)
+    """Aggregates for the dashboard KPI tiles and charts (app runs only)."""
+    runs = list_runs(limit=1000, app_only=True)
     finished = [r for r in runs if r.get("status") in ("success", "error")]
     succeeded = [r for r in finished if r.get("status") == "success"]
 

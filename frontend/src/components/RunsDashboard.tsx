@@ -6,6 +6,7 @@ import {
   type RunMetrics,
   type RunRecord,
 } from "../api";
+import { filterRuns, metricsFromRuns } from "../runMetrics";
 import { IconDownload, IconSearch, IconX } from "./icons";
 
 /**
@@ -361,8 +362,11 @@ function summarizeEvent(evt: Record<string, unknown>): string {
     });
     return parts.filter(Boolean).join("  ") || "assistant message";
   }
-  if (type === "result")
-    return `result — cost ${fmtUsd(evt.total_cost_usd as number)} · ${String(evt.num_turns ?? "?")} turns`;
+  if (type === "result" || type === "end") {
+    const cost = evt.total_cost_usd as number | undefined;
+    const turns = evt.num_turns ?? "?";
+    return `${type} — cost ${fmtUsd(cost)} · ${String(turns)} turns`;
+  }
   if (type === "text" || type === "thought")
     return String(evt.data ?? "").slice(0, 100);
   const data = JSON.stringify(evt);
@@ -532,9 +536,10 @@ function RunDetail({ run }: { run: RunRecord }) {
 // --- main view --------------------------------------------------------------------
 export default function RunsDashboard() {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
-  const [metrics, setMetrics] = useState<RunMetrics | null>(null);
   const [kind, setKind] = useState<string>("");
   const [query, setQuery] = useState("");
+  /** Explicit individual-run focus for metrics (not just table search). */
+  const [runId, setRunId] = useState<string>("");
   const [openId, setOpenId] = useState<string | null>(null);
 
   const anyRunning = (runs ?? []).some((r) => r.status === "running");
@@ -543,14 +548,8 @@ export default function RunsDashboard() {
     let cancelled = false;
     const load = async () => {
       try {
-        const [r, m] = await Promise.all([
-          api.listRuns({ limit: 500 }),
-          api.getRunMetrics(),
-        ]);
-        if (!cancelled) {
-          setRuns(r.runs);
-          setMetrics(m);
-        }
+        const r = await api.listRuns({ limit: 500 });
+        if (!cancelled) setRuns(r.runs);
       } catch {
         if (!cancelled && runs === null) setRuns([]);
       }
@@ -564,20 +563,29 @@ export default function RunsDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anyRunning]);
 
-  // One filter row scopes everything below it (charts + table).
-  const filtered = useMemo(() => {
-    let list = runs ?? [];
-    if (kind) list = list.filter((r) => r.kind === kind);
-    const q = query.trim().toLowerCase();
-    if (q)
-      list = list.filter((r) =>
-        [r.title, r.slug, r.model, r.driver, r.id]
-          .join(" ")
-          .toLowerCase()
-          .includes(q)
-      );
-    return list;
-  }, [runs, kind, query]);
+  // Drop a selected run id if it disappeared (or is filtered out by kind).
+  useEffect(() => {
+    if (!runId || !runs) return;
+    if (!runs.some((r) => r.id === runId)) setRunId("");
+  }, [runs, runId]);
+
+  // Kind + text + individual run — one filter row scopes tiles, charts, table.
+  const filtered = useMemo(
+    () => filterRuns(runs ?? [], { kind, query, runId }),
+    [runs, kind, query, runId]
+  );
+
+  // KPIs always match the filtered selection (one run when selected).
+  const m: RunMetrics | null = useMemo(
+    () => (runs === null ? null : metricsFromRuns(filtered)),
+    [runs, filtered]
+  );
+
+  // Options for the run picker: respect kind/query so the list stays useful.
+  const runOptions = useMemo(
+    () => filterRuns(runs ?? [], { kind, query }),
+    [runs, kind, query]
+  );
 
   // Charts read the last 30 filtered runs, oldest → newest.
   const chartRuns = useMemo(
@@ -619,7 +627,12 @@ export default function RunsDashboard() {
       ],
     }));
 
-  const m = metrics;
+  const costSub =
+    runId
+      ? "selected run"
+      : kind || query
+        ? "filtered runs"
+        : "all instrumented runs";
 
   return (
     <div className="space-y-5">
@@ -646,6 +659,33 @@ export default function RunsDashboard() {
             </button>
           ))}
         </div>
+        <label className="flex items-center gap-1.5 text-[11.5px] text-slate-500">
+          <span className="sr-only">Individual run</span>
+          <select
+            className="field max-w-[260px] py-1.5 text-[12.5px]"
+            aria-label="Filter metrics by individual run"
+            value={runId}
+            onChange={(e) => setRunId(e.target.value)}
+          >
+            <option value="">All runs</option>
+            {runOptions.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.title || r.slug || r.id} · {r.kind} · {fmtClock(r.startedAt)}
+                {r.costUsd != null ? ` · ${fmtUsd(r.costUsd)}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {runId && (
+          <button
+            type="button"
+            onClick={() => setRunId("")}
+            className="btn-ghost !px-2 !py-1 text-[11.5px] text-slate-400 hover:text-slate-200"
+            title="Clear individual run filter"
+          >
+            <IconX size={12} /> Clear run
+          </button>
+        )}
         <span className="relative ml-auto flex items-center">
           <span className="pointer-events-none absolute left-2.5 text-slate-500" aria-hidden>
             <IconSearch size={13} />
@@ -669,7 +709,7 @@ export default function RunsDashboard() {
         </span>
       </div>
 
-      {/* KPI row */}
+      {/* KPI row — values come from the filtered selection. */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <StatTile
           label="Runs"
@@ -684,7 +724,7 @@ export default function RunsDashboard() {
         <StatTile
           label="Total cost"
           value={fmtUsd(m?.totalCostUsd ?? null)}
-          sub="all instrumented runs"
+          sub={costSub}
         />
         <StatTile
           label="Tokens"

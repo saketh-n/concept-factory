@@ -45,7 +45,11 @@ def seed() -> None:
         slug, title = topics[i % len(topics)]
         kind = kinds[i % len(kinds)]
         rec = runs.new_run(
-            kind=kind, topicId=f"{SEED_TOPIC_PREFIX}{i}", slug=slug, title=title
+            kind=kind,
+            topicId=f"{SEED_TOPIC_PREFIX}{i}",
+            slug=slug,
+            title=title,
+            source=runs.SOURCE_APP,  # intentional UI fixtures, not pollution
         )
         driver = "claude" if i % 3 else "grok"
         rec.update(
