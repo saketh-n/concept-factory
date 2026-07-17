@@ -186,7 +186,7 @@ class CatalogPollTests(unittest.TestCase):
         """Within TTL, second sequential call must hit memory cache."""
         calls = {"n": 0}
 
-        def fake() -> dict:
+        def fake(*args, **kwargs) -> dict:
             calls["n"] += 1
             return self._fake_discover()
 
@@ -206,7 +206,7 @@ class CatalogPollTests(unittest.TestCase):
         calls = {"n": 0}
         barrier = threading.Barrier(2)
 
-        def fake() -> dict:
+        def fake(*args, **kwargs) -> dict:
             calls["n"] += 1
             time.sleep(0.15)
             return self._fake_discover()

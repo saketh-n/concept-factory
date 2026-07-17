@@ -158,7 +158,7 @@ class StaleWhileRevalidateTests(unittest.TestCase):
     def test_expired_cache_served_stale_then_revalidated(self) -> None:
         calls = {"n": 0}
 
-        def fake() -> dict:
+        def fake(*args, **kwargs) -> dict:
             calls["n"] += 1
             return {"fetchedAt": time.time(), "grok": {}, "claude": {}}
 
@@ -180,3 +180,63 @@ class StaleWhileRevalidateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HelpCacheAndFileFirstTests(unittest.TestCase):
+    """File-first discovery: steady-state polls spawn zero processes."""
+
+    def setUp(self) -> None:
+        agent.clear_settings_catalog_cache()
+        agent.reset_cli_spawn_count()
+
+    def tearDown(self) -> None:
+        agent.clear_settings_catalog_cache()
+
+    def test_get_cli_help_uses_disk_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fake_bin = Path(td) / "fakecli"
+            fake_bin.write_text("#!/bin/sh\necho 'usage: fakecli [possible values: a, b]'\n")
+            fake_bin.chmod(0o755)
+            cache_file = Path(td) / "help_cache.json"
+            with mock.patch.object(agent, "_HELP_CACHE_FILE", cache_file):
+                r1 = agent.get_cli_help(str(fake_bin))
+                self.assertFalse(r1["cached"])
+                self.assertIn("possible values", r1["stdout"])
+                spawns_after_first = agent.get_cli_spawn_count()
+                r2 = agent.get_cli_help(str(fake_bin))
+                self.assertTrue(r2["cached"])
+                self.assertEqual(r2["stdout"].strip(), r1["stdout"].strip())
+                self.assertEqual(agent.get_cli_spawn_count(), spawns_after_first,
+                                 "cached help must not spawn")
+                # Binary change invalidates the cache.
+                fake_bin.write_text("#!/bin/sh\necho 'usage: fakecli v2'\n")
+                fake_bin.chmod(0o755)
+                r3 = agent.get_cli_help(str(fake_bin))
+                self.assertFalse(r3["cached"])
+                self.assertIn("v2", r3["stdout"])
+                # refresh=True bypasses even a valid cache.
+                r4 = agent.get_cli_help(str(fake_bin), refresh=True)
+                self.assertFalse(r4["cached"])
+
+    def test_shallow_claude_discovery_spawns_nothing_when_help_cached(self) -> None:
+        with FakeHome() as home, tempfile.TemporaryDirectory() as td:
+            (home / ".claude").mkdir()
+            (home / ".claude" / "settings.json").write_text(json.dumps({"model": "haiku"}))
+            fake_bin = Path(td) / "claude"
+            fake_bin.write_text(
+                "#!/bin/sh\necho \"use 'fable', 'haiku', or 'sonnet' "
+                "--permission-mode <mode> [possible values: plan, acceptEdits]\"\n"
+            )
+            fake_bin.chmod(0o755)
+            cache_file = Path(td) / "help_cache.json"
+            with mock.patch.object(agent, "_HELP_CACHE_FILE", cache_file), \
+                 mock.patch.object(agent, "CLAUDE_BIN", str(fake_bin)):
+                agent.discover_claude_options(deep=False)  # warms help cache
+                agent.reset_cli_spawn_count()
+                out = agent.discover_claude_options(deep=False)
+                self.assertEqual(agent.get_cli_spawn_count(), 0,
+                                 "file-first discovery must not spawn")
+                self.assertEqual(out["currentModel"], "haiku")
+                values = [o["value"] for o in out["models"]]
+                self.assertIn("haiku", values)
+                self.assertIn("fable", values)

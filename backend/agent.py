@@ -143,13 +143,28 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Wall-clock for a single discovery subprocess.
 CATALOG_CLI_TIMEOUT = int(os.environ.get("CF_SETTINGS_CATALOG_TIMEOUT", "90"))
-# How long a successful catalog poll is reused (seconds).
-CATALOG_TTL_SECONDS = int(os.environ.get("CF_SETTINGS_CATALOG_TTL", "3600"))
+# How long a successful catalog poll is reused (seconds). Discovery is now
+# file-first (~ms), so a short TTL is cheap and keeps the widget in step with
+# changes made directly in the CLIs (e.g. /model in an interactive session).
+CATALOG_TTL_SECONDS = int(os.environ.get("CF_SETTINGS_CATALOG_TTL", "15"))
 # Claude's full Available: list needs a ~1s headless PTY session (`-p /model`).
-# Default ON so the model dropdown matches the live CLI list. Set
-# CF_SETTINGS_CLAUDE_PTY=0 to skip PTY and use settings.json + help aliases only.
-_claude_pty_env = os.environ.get("CF_SETTINGS_CLAUDE_PTY", "1").strip().lower()
-CATALOG_USE_CLAUDE_PTY = _claude_pty_env not in ("0", "false", "no", "off")
+# File-first policy: routine polls NEVER spawn it — current model comes from
+# ~/.claude/settings.json and the model list from cached `--help` aliases.
+# The PTY probe runs only on deep refresh (refresh button / force=True), or
+# always/never when CF_SETTINGS_CLAUDE_PTY is explicitly 1/0.
+_claude_pty_env = os.environ.get("CF_SETTINGS_CLAUDE_PTY", "").strip().lower()
+
+
+def _use_claude_pty(deep: bool) -> bool:
+    if _claude_pty_env in ("1", "true", "yes", "on"):
+        return True
+    if _claude_pty_env in ("0", "false", "no", "off"):
+        return False
+    return deep
+
+
+# Retained for backwards compat with any external readers.
+CATALOG_USE_CLAUDE_PTY = _use_claude_pty(False)
 
 _catalog_lock = threading.Lock()
 _catalog_cache: Optional[dict] = None
@@ -642,18 +657,84 @@ def _read_grok_models_cache() -> dict:
     }
 
 
-def discover_grok_options() -> dict:
+# --- Disk-cached `--help` (enums + model aliases without spawning) ----------
+# Help output only changes when the CLI binary changes, so cache it on disk
+# keyed by the binary's (path, mtime, size). Steady-state discovery then reads
+# only files: ~/.claude/settings.json, ~/.grok/{config.toml,models_cache.json},
+# and this cache — zero process spawns, ~ms wall time. A deep refresh
+# (refresh button) bypasses the cache and re-runs `--help`.
+
+_HELP_CACHE_FILE = Path(__file__).parent / ".cli_help_cache.json"
+_help_cache_lock = threading.Lock()
+
+
+def _bin_fingerprint(bin_path: str) -> Optional[dict]:
+    resolved = shutil.which(bin_path) or bin_path
+    try:
+        st = os.stat(resolved)
+    except OSError:
+        return None
+    return {"path": resolved, "mtime": st.st_mtime, "size": st.st_size}
+
+
+def _load_help_cache() -> dict:
+    try:
+        data = json.loads(_HELP_CACHE_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def get_cli_help(bin_path: str, refresh: bool = False) -> dict:
+    """Return ``--help`` text for a CLI, from disk cache when the binary is
+    unchanged. Shape matches ``run_discovery_cli`` plus ``cached: bool``."""
+    fp = _bin_fingerprint(bin_path)
+    if fp is not None and not refresh:
+        with _help_cache_lock:
+            entry = _load_help_cache().get(fp["path"])
+        if (
+            isinstance(entry, dict)
+            and entry.get("mtime") == fp["mtime"]
+            and entry.get("size") == fp["size"]
+            and isinstance(entry.get("help"), str)
+        ):
+            return {
+                "argv": [bin_path, "--help"],
+                "stdout": entry["help"],
+                "stderr": "",
+                "returncode": 0,
+                "error": None,
+                "pty": False,
+                "cached": True,
+            }
+    run = run_discovery_cli([bin_path, "--help"])
+    run["cached"] = False
+    if fp is not None and run.get("returncode") == 0 and not run.get("error"):
+        text = (run.get("stdout") or "") + ("\n" + run["stderr"] if run.get("stderr") else "")
+        with _help_cache_lock:
+            cache = _load_help_cache()
+            cache[fp["path"]] = {"mtime": fp["mtime"], "size": fp["size"], "help": text}
+            try:
+                tmp = _HELP_CACHE_FILE.with_name(_HELP_CACHE_FILE.name + ".tmp")
+                tmp.write_text(json.dumps(cache) + "\n")
+                tmp.replace(_HELP_CACHE_FILE)
+            except OSError:
+                pass  # cache is best-effort
+    return run
+
+
+def discover_grok_options(deep: bool = False) -> dict:
     """Live discovery for Grok Build: models + help enums.
 
-    Prefers Grok's own ``models_cache.json`` + ``config.toml`` (near-instant)
-    and only shells out to ``grok models`` when the cache file is missing.
-    Help enums still come from a quick ``grok --help``.
+    File-first: models from ``models_cache.json``, current from ``config.toml``,
+    enums from disk-cached ``--help``. Steady-state → zero spawns. ``deep=True``
+    (refresh button) re-runs ``grok --help``.
     """
     file_models = _read_grok_models_cache()
     cfg_default = _read_grok_config_default()
 
     def _help() -> dict:
-        return run_discovery_cli([GROK_BIN, "--help"])
+        return get_cli_help(GROK_BIN, refresh=deep)
 
     def _cli_models() -> dict:
         return run_discovery_cli([GROK_BIN, "models"])
@@ -776,16 +857,17 @@ def _read_claude_user_settings_model() -> str:
     return ""
 
 
-def discover_claude_options() -> dict:
-    """Live discovery for Claude Code.
+def discover_claude_options(deep: bool = False) -> dict:
+    """Discovery for Claude Code — file-first.
 
-    **Current model** always comes from ``~/.claude/settings.json`` (instant,
-    matches sticky CLI selection). **Available models** default from
-    ``claude --help`` aliases (fast). Optionally set ``CF_SETTINGS_CLAUDE_PTY=1``
-    to also run headless ``claude -p /model`` under a PTY for the full
-    Available: list (~1s extra).
+    **Current model** comes from ``~/.claude/settings.json`` (instant, exactly
+    what the CLI persists). **Available models** come from disk-cached
+    ``claude --help`` aliases. Steady-state → zero process spawns.
 
-    Help enums always from ``claude --help``. Probes run in parallel.
+    ``deep=True`` (refresh button / force) additionally runs headless
+    ``claude -p /model`` under a PTY (~1s) for the CLI's full Available: list,
+    and re-runs ``--help``. CF_SETTINGS_CLAUDE_PTY=1/0 forces the PTY probe
+    always/never.
     """
     settings_model = _read_claude_user_settings_model()
     model_argv = [
@@ -797,13 +879,13 @@ def discover_claude_options() -> dict:
     ]
 
     def _help() -> dict:
-        return run_discovery_cli([CLAUDE_BIN, "--help"])
+        return get_cli_help(CLAUDE_BIN, refresh=deep)
 
     def _model_pty() -> dict:
         return run_discovery_cli(model_argv, use_pty=True)
 
     model_run: Optional[dict] = None
-    if not CATALOG_USE_CLAUDE_PTY:
+    if not _use_claude_pty(deep):
         help_run = _help()
         combined = ""
         models_probe = {
@@ -979,12 +1061,16 @@ def apply_cli_current_to_settings(
     return s
 
 
-def discover_settings_catalog() -> dict:
-    """Run full live discovery for both drivers in parallel."""
+def discover_settings_catalog(deep: bool = False) -> dict:
+    """Run discovery for both drivers in parallel.
+
+    Default is file-first (no spawns when help cache is warm). ``deep=True``
+    re-runs ``--help`` and the Claude PTY probe for the full live model list.
+    """
     fetched_at = _time.time()
     with ThreadPoolExecutor(max_workers=2) as pool:
-        f_grok = pool.submit(discover_grok_options)
-        f_claude = pool.submit(discover_claude_options)
+        f_grok = pool.submit(discover_grok_options, deep)
+        f_claude = pool.submit(discover_claude_options, deep)
         grok = f_grok.result()
         claude = f_claude.result()
     elapsed_ms = round((_time.time() - fetched_at) * 1000, 1)
@@ -993,22 +1079,27 @@ def discover_settings_catalog() -> dict:
         "fetchedAtIso": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(fetched_at)),
         "elapsedMs": elapsed_ms,
         "ttlSeconds": CATALOG_TTL_SECONDS,
-        "source": "live-cli",
+        "source": "live-cli" if deep else "files",
+        "deep": deep,
         "cache": "none",
         "grok": grok,
         "claude": claude,
     }
 
 
-def get_settings_catalog(force: bool = False) -> dict:
+def get_settings_catalog(force: bool = False, deep: Optional[bool] = None) -> dict:
     """Return the settings option catalog, using a TTL memory cache.
 
-    ``force=True`` busts the cache (refresh button). Concurrent callers share
-    one in-flight discovery so parallel GET /settings + GET /catalog do not
-    double-spawn CLIs.
+    ``force=True`` busts the cache (refresh button) and by default also runs a
+    deep probe (``--help`` + Claude PTY for the full model list). Pass
+    ``deep=False`` with force for a cheap file-only re-read (used by background
+    revalidation). Concurrent callers share one in-flight discovery.
     """
     global _catalog_cache, _catalog_cache_fetched_at
     global _catalog_inflight, _catalog_inflight_result, _catalog_inflight_error
+
+    if deep is None:
+        deep = force
 
     now = _time.time()
     if not force:
@@ -1031,7 +1122,7 @@ def get_settings_catalog(force: bool = False) -> dict:
                 stale_out["ttlSeconds"] = CATALOG_TTL_SECONDS
         if stale_out is not None:
             threading.Thread(
-                target=lambda: get_settings_catalog(force=True),
+                target=lambda: get_settings_catalog(force=True, deep=False),
                 daemon=True,
                 name="cf-catalog-revalidate",
             ).start()
@@ -1073,10 +1164,10 @@ def get_settings_catalog(force: bool = False) -> dict:
                 out["cache"] = "memory"
                 out["ageSeconds"] = round(_time.time() - _catalog_cache_fetched_at, 3)
                 return out
-        return get_settings_catalog(force=force)
+        return get_settings_catalog(force=force, deep=deep)
 
     try:
-        catalog = discover_settings_catalog()
+        catalog = discover_settings_catalog(deep=deep)
         catalog["cache"] = "none"
         catalog["ageSeconds"] = 0
         catalog["ttlSeconds"] = CATALOG_TTL_SECONDS
