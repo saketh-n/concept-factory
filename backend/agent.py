@@ -667,6 +667,15 @@ def _read_grok_models_cache() -> dict:
 _HELP_CACHE_FILE = Path(__file__).parent / ".cli_help_cache.json"
 _help_cache_lock = threading.Lock()
 
+# The full Claude model list (sonnet/opus/haiku/fable/...) only appears in the
+# PTY `/model` "Available:" output, which is deep-only. `claude --help` does not
+# enumerate every alias (notably haiku), so shallow discovery would drop models
+# the user actually has. We persist the last deep-probed list to disk, keyed by
+# the same binary fingerprint, so shallow discovery serves the complete list
+# with zero spawns and a deep refresh keeps it current.
+_MODEL_LIST_CACHE_FILE = Path(__file__).parent / ".cli_model_list_cache.json"
+_model_list_lock = threading.Lock()
+
 
 def _bin_fingerprint(bin_path: str) -> Optional[dict]:
     resolved = shutil.which(bin_path) or bin_path
@@ -683,6 +692,50 @@ def _load_help_cache() -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError, ValueError):
         return {}
+
+
+def _load_model_list_cache() -> dict:
+    try:
+        data = json.loads(_MODEL_LIST_CACHE_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def cached_claude_models(bin_path: str = None) -> List[str]:
+    """Last deep-probed Claude model aliases for this binary, or []."""
+    fp = _bin_fingerprint(bin_path or CLAUDE_BIN)
+    if fp is None:
+        return []
+    with _model_list_lock:
+        entry = _load_model_list_cache().get(fp["path"])
+    if (
+        isinstance(entry, dict)
+        and entry.get("mtime") == fp["mtime"]
+        and entry.get("size") == fp["size"]
+        and isinstance(entry.get("models"), list)
+    ):
+        return [m for m in entry["models"] if isinstance(m, str)]
+    return []
+
+
+def save_claude_model_list(models: List[str], bin_path: str = None) -> None:
+    """Persist deep-probed model aliases keyed by binary fingerprint (best-effort)."""
+    models = [m for m in (models or []) if isinstance(m, str) and m.strip()]
+    if not models:
+        return
+    fp = _bin_fingerprint(bin_path or CLAUDE_BIN)
+    if fp is None:
+        return
+    with _model_list_lock:
+        cache = _load_model_list_cache()
+        cache[fp["path"]] = {"mtime": fp["mtime"], "size": fp["size"], "models": models}
+        try:
+            tmp = _MODEL_LIST_CACHE_FILE.with_name(_MODEL_LIST_CACHE_FILE.name + ".tmp")
+            tmp.write_text(json.dumps(cache) + "\n")
+            tmp.replace(_MODEL_LIST_CACHE_FILE)
+        except OSError:
+            pass
 
 
 def get_cli_help(bin_path: str, refresh: bool = False) -> dict:
@@ -935,6 +988,18 @@ def discover_claude_options(deep: bool = False) -> dict:
     if help_models:
         have = {o["value"] for o in parsed["models"]}
         for m in help_models:
+            if m not in have:
+                parsed["models"].append(_opt(m))
+                have.add(m)
+    if deep:
+        # Deep probe saw the full "Available:" list — persist it so shallow
+        # polls can serve the complete set (incl. haiku) without spawning.
+        save_claude_model_list([o["value"] for o in parsed["models"]])
+    else:
+        # Shallow: fold in the last deep-probed list so models absent from
+        # --help (e.g. haiku) don't disappear between refreshes.
+        have = {o["value"] for o in parsed["models"]}
+        for m in cached_claude_models():
             if m not in have:
                 parsed["models"].append(_opt(m))
                 have.add(m)
@@ -1268,6 +1333,65 @@ def _write_claude_cli_model(model: str) -> dict:
         return {**action, "ok": False, "changed": False, "error": str(e)}
 
 
+def _claude_settings_path() -> Path:
+    return Path.home() / ".claude" / "settings.json"
+
+
+def _grok_config_path() -> Path:
+    return Path.home() / ".grok" / "config.toml"
+
+
+def read_current_models() -> dict:
+    """Cheap read of the *current* model for both drivers straight from the
+    files the CLIs persist to. No process spawn, no catalog — microseconds.
+    Used by the real-time watcher so a CLI-side `/model` change surfaces in the
+    widget without a re-poll."""
+    return {
+        "claude": {"currentModel": _read_claude_user_settings_model()},
+        "grok": {"currentModel": _read_grok_config_default()},
+    }
+
+
+def current_models_signature() -> str:
+    """mtime+size fingerprint of the two config files, for change detection."""
+    parts: List[str] = []
+    for p in (_claude_settings_path(), _grok_config_path()):
+        try:
+            st = p.stat()
+            parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            parts.append(f"{p}:-")
+    return "|".join(parts)
+
+
+def detect_claude_model_overrides(target_model: str) -> List[dict]:
+    """Find higher-precedence sources that would mask ~/.claude/settings.json.
+
+    Claude Code resolves the model with user settings.json as the *lowest*
+    priority, so anything below wins over the write-back and the widget should
+    warn rather than silently lose:
+      - ANTHROPIC_MODEL env var
+      - project ./.claude/settings.json ["model"]
+      - project ./.claude/settings.local.json ["model"]
+    Returns [{source, value}] for sources that disagree with ``target_model``.
+    """
+    overrides: List[dict] = []
+    env_model = os.environ.get("ANTHROPIC_MODEL", "").strip()
+    if env_model and env_model != target_model:
+        overrides.append({"source": "env:ANTHROPIC_MODEL", "value": env_model})
+    for rel in (".claude/settings.json", ".claude/settings.local.json"):
+        p = Path.cwd() / rel
+        try:
+            if p.exists():
+                d = json.loads(p.read_text() or "{}")
+                m = d.get("model") if isinstance(d, dict) else None
+                if m and str(m).strip() and str(m).strip() != target_model:
+                    overrides.append({"source": f"project:{rel}", "value": str(m).strip()})
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+    return overrides
+
+
 def _write_grok_cli_model(model: str) -> dict:
     """Persist model into ``~/.grok/config.toml`` ``[models] default`` (line edit)."""
     path = Path.home() / ".grok" / "config.toml"
@@ -1360,14 +1484,27 @@ def sync_settings_to_cli(settings: dict) -> dict:
     actions: List[dict] = []
     claude_model = (s.get("claude") or {}).get("model") or ""
     grok_model = (s.get("grok") or {}).get("model") or ""
-    # Bootstrap sentinels mean "follow the CLI" — never write them back.
-    if claude_model in _CLAUDE_BOOTSTRAP_MODELS:
-        claude_model = ""
+    # NOTE: do NOT drop "sonnet" here. _CLAUDE_BOOTSTRAP_MODELS is a *read-side*
+    # heuristic for guessing whether a *stored* default is stale; on the write
+    # path the user has explicitly chosen this model in the widget, so persist
+    # it verbatim. Only an empty selection means "leave the CLI alone".
     if claude_model:
         res = _write_claude_cli_model(claude_model)
-        actions.append(res)
         if res.get("ok"):
+            # Verify the value actually landed (catches silent no-ops / wrong file).
+            landed = _read_claude_user_settings_model()
+            res["verified"] = landed == claude_model
+            if not res["verified"]:
+                res["error"] = (
+                    f"wrote settings.json but read back {landed!r} != {claude_model!r}"
+                )
+            # settings.json user model is the *lowest*-priority source; a higher
+            # one (env / project settings) will mask it — surface, don't lose.
+            overrides = detect_claude_model_overrides(claude_model)
+            if overrides:
+                res["overriddenBy"] = overrides
             update_catalog_cache_current(DRIVER_CLAUDE, claude_model)
+        actions.append(res)
     if grok_model:
         res = _write_grok_cli_model(grok_model)
         actions.append(res)

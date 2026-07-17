@@ -95,6 +95,23 @@ export default function SettingsModal({ onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Real-time: reflect CLI-side `/model` changes without a manual re-poll.
+  useEffect(() => {
+    const unsubscribe = api.subscribeCurrentModels((data) => {
+      setCatalog((prev) => {
+        if (!prev) return prev;
+        const gCur = data.grok?.currentModel ?? prev.grok?.currentModel ?? "";
+        const cCur = data.claude?.currentModel ?? prev.claude?.currentModel ?? "";
+        return {
+          ...prev,
+          grok: { ...prev.grok, currentModel: gCur },
+          claude: { ...prev.claude, currentModel: cCur },
+        };
+      });
+    });
+    return unsubscribe;
+  }, []);
+
   const setDriver = (driver: AgentDriver) => {
     setDraft((prev) => (prev ? { ...prev, driver } : prev));
   };

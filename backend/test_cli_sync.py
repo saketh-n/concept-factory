@@ -139,13 +139,83 @@ class SyncSettingsTests(unittest.TestCase):
             self.assertEqual(labels["fable"], "fable")
             agent.clear_settings_catalog_cache()
 
-    def test_bootstrap_sonnet_not_written_back(self) -> None:
+    def test_explicit_sonnet_choice_is_written(self) -> None:
+        """Regression: picking 'sonnet' in the widget must persist, not be
+        dropped as a bootstrap sentinel (that heuristic is read-side only)."""
         with FakeHome() as home, mock.patch.dict(os.environ, {"CF_SETTINGS_SYNC_CLI": "1"}):
             out = agent.sync_settings_to_cli({"claude": {"model": "sonnet"}})
             self.assertTrue(out["enabled"])
             claude_actions = [a for a in out["actions"] if a["driver"] == "claude"]
+            self.assertEqual(len(claude_actions), 1)
+            self.assertTrue(claude_actions[0]["ok"])
+            self.assertTrue(claude_actions[0].get("verified"))
+            self.assertEqual(agent._read_claude_user_settings_model(), "sonnet")
+            data = json.loads((home / ".claude" / "settings.json").read_text())
+            self.assertEqual(data["model"], "sonnet")
+
+    def test_empty_model_leaves_cli_alone(self) -> None:
+        with FakeHome() as home, mock.patch.dict(os.environ, {"CF_SETTINGS_SYNC_CLI": "1"}):
+            out = agent.sync_settings_to_cli({"claude": {"model": ""}})
+            claude_actions = [a for a in out["actions"] if a["driver"] == "claude"]
             self.assertEqual(claude_actions, [])
             self.assertFalse((home / ".claude" / "settings.json").exists())
+
+    def test_override_detection_env_and_project(self) -> None:
+        with FakeHome() as home, mock.patch.object(Path, "cwd", return_value=home), \
+             mock.patch.dict(os.environ, {"CF_SETTINGS_SYNC_CLI": "1", "ANTHROPIC_MODEL": "fable"}):
+            (home / ".claude").mkdir(parents=True, exist_ok=True)
+            (home / ".claude" / "settings.local.json").write_text(json.dumps({"model": "opus"}))
+            out = agent.sync_settings_to_cli({"claude": {"model": "sonnet"}})
+            a = [x for x in out["actions"] if x["driver"] == "claude"][0]
+            sources = {o["source"] for o in a.get("overriddenBy", [])}
+            self.assertIn("env:ANTHROPIC_MODEL", sources)
+            self.assertIn("project:.claude/settings.local.json", sources)
+
+
+class ModelListCacheTests(unittest.TestCase):
+    """Fix 2: haiku (absent from --help) survives shallow polls via disk cache."""
+
+    def test_deep_list_persists_and_shallow_reuses(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td) / "model_list.json"
+            fake_bin = Path(td) / "claude"
+            fake_bin.write_text("#!/bin/sh\necho hi\n")
+            fake_bin.chmod(0o755)
+            with mock.patch.object(agent, "_MODEL_LIST_CACHE_FILE", cache), \
+                 mock.patch.object(agent, "CLAUDE_BIN", str(fake_bin)):
+                agent.save_claude_model_list(["sonnet", "opus", "haiku", "fable"])
+                got = agent.cached_claude_models()
+                self.assertIn("haiku", got)
+                self.assertEqual(set(got), {"sonnet", "opus", "haiku", "fable"})
+                # Binary change invalidates the cache.
+                fake_bin.write_text("#!/bin/sh\necho v2\n")
+                fake_bin.chmod(0o755)
+                self.assertEqual(agent.cached_claude_models(), [])
+
+
+class CurrentModelReadTests(unittest.TestCase):
+    """Fix 3 backend: cheap file-only current read + change signature."""
+
+    def test_read_current_models_from_files(self) -> None:
+        with FakeHome() as home:
+            (home / ".claude").mkdir()
+            (home / ".claude" / "settings.json").write_text(json.dumps({"model": "haiku"}))
+            (home / ".grok").mkdir()
+            (home / ".grok" / "config.toml").write_text('[models]\ndefault = "grok-4.5"\n')
+            cur = agent.read_current_models()
+            self.assertEqual(cur["claude"]["currentModel"], "haiku")
+            self.assertEqual(cur["grok"]["currentModel"], "grok-4.5")
+
+    def test_signature_changes_on_edit(self) -> None:
+        with FakeHome() as home:
+            (home / ".claude").mkdir()
+            f = home / ".claude" / "settings.json"
+            f.write_text(json.dumps({"model": "sonnet"}))
+            sig1 = agent.current_models_signature()
+            time.sleep(0.01)
+            f.write_text(json.dumps({"model": "haiku"}))
+            os.utime(f, None)
+            self.assertNotEqual(sig1, agent.current_models_signature())
 
 
 class StaleWhileRevalidateTests(unittest.TestCase):

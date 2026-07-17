@@ -345,6 +345,35 @@ export const api = {
       json<{ catalog: SettingsCatalog; settings: FactorySettings }>
     ),
 
+  /** Cheap current-model read straight from the CLI config files (no spawn). */
+  getCurrentModels: () =>
+    fetch("/api/settings/current").then(
+      json<{ grok: { currentModel: string }; claude: { currentModel: string } }>
+    ),
+
+  /**
+   * Subscribe to live current-model changes via SSE. The backend pushes
+   * whenever ~/.claude/settings.json or ~/.grok/config.toml changes, so a
+   * `/model` switch in the terminal updates the widget with no re-poll.
+   * Returns an unsubscribe fn.
+   */
+  subscribeCurrentModels: (
+    onChange: (data: {
+      grok: { currentModel: string };
+      claude: { currentModel: string };
+    }) => void
+  ): (() => void) => {
+    const es = new EventSource("/api/settings/current/stream");
+    es.onmessage = (ev) => {
+      try {
+        onChange(JSON.parse(ev.data));
+      } catch {
+        /* ignore malformed frames */
+      }
+    };
+    return () => es.close();
+  },
+
   /** Structured per-run records, newest first. */
   listRuns: (opts: { topicId?: string; kind?: string; limit?: number } = {}) => {
     const params = new URLSearchParams();

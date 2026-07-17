@@ -6,14 +6,16 @@ mutation, so everything survives a server restart.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -359,6 +361,42 @@ def get_settings(syncCli: bool = False) -> dict:
         return stored
     catalog = agent.get_settings_catalog()
     return agent.apply_cli_current_to_settings(stored, catalog, follow_cli=False)
+
+
+@app.get("/api/settings/current")
+def get_current_models() -> dict:
+    """Cheap current-model read straight from the CLI config files (no spawn)."""
+    return agent.read_current_models()
+
+
+@app.get("/api/settings/current/stream")
+async def stream_current_models(request: Request) -> StreamingResponse:
+    """Server-Sent Events: push the current model whenever the CLIs' config
+    files change on disk, so a `/model` switch in the terminal updates the
+    open widget in real time without polling or a manual refresh."""
+
+    async def gen():
+        last_sig = None
+        # Emit immediately on connect so the client syncs without waiting.
+        yield f"data: {json.dumps(agent.read_current_models())}\n\n"
+        last_sig = agent.current_models_signature()
+        while True:
+            if await request.is_disconnected():
+                break
+            sig = agent.current_models_signature()
+            if sig != last_sig:
+                last_sig = sig
+                yield f"data: {json.dumps(agent.read_current_models())}\n\n"
+            else:
+                # Comment line as a keep-alive so proxies don't drop the stream.
+                yield ": keep-alive\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.put("/api/settings")

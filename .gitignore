@@ -8,6 +8,7 @@ backend/usage.json
 backend/settings.json
 backend/settings_catalog_cache.json
 backend/.cli_help_cache.json
+backend/.cli_model_list_cache.json
 backend/workspace/
 backend/runs/
 fullstack/
