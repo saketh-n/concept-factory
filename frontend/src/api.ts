@@ -49,6 +49,11 @@ export interface GrokDriverSettings {
   model: string;
   permissionMode: string;
   reasoningEffort: string;
+  /**
+   * Max $ spend per Approve & build when driver is Grok Build.
+   * Empty string = unlimited. Converted server-side to goal token budget.
+   */
+  maxBuildBudgetUsd?: string;
 }
 
 export interface ClaudeDriverSettings {
@@ -275,8 +280,20 @@ export const api = {
       body: JSON.stringify({ plan }),
     }).then(json<Topic>),
 
-  buildTopic: (id: string) =>
-    fetch(`/api/topics/${id}/build`, { method: "POST" }).then(json<Topic>),
+  /**
+   * Start Approve & build. Optional `budgetUsd`:
+   * - omit → server uses global grok.maxBuildBudgetUsd
+   * - null → unlimited for this build
+   * - positive number → dollar cap (Grok only; ignored for Claude)
+   */
+  buildTopic: (id: string, opts?: { budgetUsd?: number | null }) =>
+    fetch(`/api/topics/${id}/build`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        opts && "budgetUsd" in opts ? { budgetUsd: opts.budgetUsd } : {}
+      ),
+    }).then(json<Topic>),
 
   getLog: (id: string) =>
     fetch(`/api/topics/${id}/log`).then(

@@ -13,6 +13,7 @@ in ``settings.json`` next to this module.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -21,6 +22,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+# Sentinel: build job did not pass an explicit per-build budget override
+# (fall back to settings.grok.maxBuildBudgetUsd). Distinct from None, which
+# means "unlimited for this build".
+_BUDGET_UNSET: Any = object()
 
 TEMPLATE_DIR = Path(__file__).parents[1] / "meta-agent" / "template"
 
@@ -48,6 +54,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "model": "",
         "permissionMode": "acceptEdits",
         "reasoningEffort": "",  # empty | low | medium | high
+        # Max $ spend per Approve & build (Grok goal --budget). Empty = unlimited.
+        "maxBuildBudgetUsd": "",
     },
     "claude": {
         # Empty → follow Claude Code's currently selected model (not a hard-wired alias).
@@ -58,6 +66,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
 }
 
+# Approximate blended tokens per USD for Grok Build goal budgets.
+# Observed factory runs land near ~0.9M tok/$; we use a clean 1M so $1 → 1_000_000
+# tokens. Not exact billing parity (cache hits / model mix shift the real rate).
+TOKENS_PER_USD = 1_000_000
+
 # Historical bootstrap default that was hard-coded before live CLI current.
 # Treated as "unset / follow CLI" so a stale sonnet doesn't mask fable, etc.
 _CLAUDE_BOOTSTRAP_MODELS = frozenset({"", "sonnet"})
@@ -66,6 +79,94 @@ _CLAUDE_BOOTSTRAP_MODELS = frozenset({"", "sonnet"})
 def default_settings() -> dict:
     """Deep copy of factory defaults (safe to mutate)."""
     return json.loads(json.dumps(DEFAULT_SETTINGS))
+
+
+def parse_budget_usd(value: Any) -> Optional[float]:
+    """Normalize a user/API budget value to a positive dollar amount, or None.
+
+    Empty string, None, 0, negative, non-finite, and unparseable values all
+    mean **unlimited** (no token cap).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        text = value.strip().replace(",", "").replace("$", "")
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(amount) or amount <= 0:
+        return None
+    return amount
+
+
+def dollars_to_budget_tokens(usd: Any) -> Optional[int]:
+    """Convert a dollar build budget to Grok ``/goal --budget`` tokens.
+
+    Returns ``None`` when the budget is empty/unset/non-positive (unlimited —
+    callers must omit ``--budget``). Positive dollars yield a positive int
+    token cap via :data:`TOKENS_PER_USD`.
+    """
+    amount = parse_budget_usd(usd)
+    if amount is None:
+        return None
+    tokens = int(math.floor(amount * TOKENS_PER_USD))
+    return tokens if tokens > 0 else None
+
+
+def format_budget_usd_for_storage(value: Any) -> str:
+    """Persist budget as empty string (unlimited) or a clean numeric string."""
+    amount = parse_budget_usd(value)
+    if amount is None:
+        return ""
+    # Avoid noisy floats: 5.0 → "5", 0.5 → "0.5"
+    if amount == int(amount):
+        return str(int(amount))
+    return f"{amount:.4f}".rstrip("0").rstrip(".")
+
+
+def format_grok_goal_prompt(objective: str, budget_tokens: int) -> str:
+    """Wrap a build objective as a Grok ``/goal`` with a token budget.
+
+    Grok's slash-command contract is::
+
+        /goal <objective> [--budget <tokens>]
+
+    Headless ``grok -p`` accepts the same prompt text; the goal loop then
+    enforces the token cap.
+    """
+    obj = (objective or "").strip()
+    tokens = int(budget_tokens)
+    if tokens <= 0:
+        return obj
+    if not obj:
+        return f"/goal --budget {tokens}"
+    return f"/goal {obj} --budget {tokens}"
+
+
+def resolve_build_budget_tokens(
+    override: Any = _BUDGET_UNSET,
+    settings: Optional[dict] = None,
+) -> Optional[int]:
+    """Resolve the token cap for a Grok build.
+
+    * If ``override`` is provided (including ``None`` / empty), it wins —
+      ``None``/empty means unlimited for this build.
+    * Otherwise read ``settings.grok.maxBuildBudgetUsd`` (loaded settings when
+      ``settings`` is omitted).
+    """
+    if override is not _BUDGET_UNSET:
+        return dollars_to_budget_tokens(override)
+    cfg = normalize_settings(settings if settings is not None else load_settings())
+    return dollars_to_budget_tokens((cfg.get("grok") or {}).get("maxBuildBudgetUsd"))
 
 
 def normalize_settings(raw: Optional[dict] = None) -> dict:
@@ -88,8 +189,13 @@ def normalize_settings(raw: Optional[dict] = None) -> dict:
         section = raw.get(key)
         if isinstance(section, dict):
             for k, v in section.items():
-                if k in base[key]:
-                    base[key][k] = v if v is not None else base[key][k]
+                if k not in base[key]:
+                    continue
+                # maxBuildBudgetUsd: null/None clears to unlimited ("").
+                if key == "grok" and k == "maxBuildBudgetUsd":
+                    base[key][k] = format_budget_usd_for_storage(v)
+                    continue
+                base[key][k] = v if v is not None else base[key][k]
     # Coerce booleans that may arrive as strings from forms.
     cskip = base["claude"].get("dangerouslySkipPermissions")
     if isinstance(cskip, str):
@@ -99,6 +205,10 @@ def normalize_settings(raw: Optional[dict] = None) -> dict:
             "yes",
             "on",
         )
+    # Final normalize of budget field even when section was absent/partial.
+    base["grok"]["maxBuildBudgetUsd"] = format_budget_usd_for_storage(
+        base["grok"].get("maxBuildBudgetUsd")
+    )
     return base
 
 
@@ -2033,12 +2143,21 @@ def build_grok_cmd(
     model: str = "",
     reasoning_effort: str = "",
     bin_path: Optional[str] = None,
+    budget_tokens: Optional[int] = None,
 ) -> List[str]:
-    """Build the argv for a headless Grok Build turn."""
+    """Build the argv for a headless Grok Build turn.
+
+    When ``budget_tokens`` is a positive int, the prompt is wrapped as a
+    ``/goal … --budget <tokens>`` invocation so Grok enforces the cap.
+    ``None`` / non-positive → unlimited (plain ``-p`` prompt, no budget flag).
+    """
+    effective_prompt = prompt
+    if budget_tokens is not None and int(budget_tokens) > 0:
+        effective_prompt = format_grok_goal_prompt(prompt, int(budget_tokens))
     cmd = [
         bin_path or GROK_BIN,
         "-p",
-        prompt,
+        effective_prompt,
         "--output-format",
         "streaming-json",
         "--always-approve",
@@ -2107,8 +2226,15 @@ def build_driver_cmd(
     session_id: Optional[str] = None,
     dangerously_skip: bool = False,
     permission_mode: Optional[str] = None,
+    budget_tokens: Optional[int] = None,
+    build_budget_usd: Any = _BUDGET_UNSET,
 ) -> List[str]:
-    """Dispatch command construction for the active driver (test entry point)."""
+    """Dispatch command construction for the active driver (test entry point).
+
+    ``budget_tokens`` wins when provided. Otherwise, for Grok only,
+    ``build_budget_usd`` (override or settings via :func:`resolve_build_budget_tokens`)
+    is converted to tokens. Claude never receives a budget flag.
+    """
     cfg = normalize_settings(settings)
     if driver == DRIVER_CLAUDE:
         c = cfg["claude"]
@@ -2122,6 +2248,12 @@ def build_driver_cmd(
             effort=c.get("effort") or "",
         )
     g = cfg["grok"]
+    tokens = budget_tokens
+    if tokens is None and build_budget_usd is not _BUDGET_UNSET:
+        tokens = resolve_build_budget_tokens(override=build_budget_usd, settings=cfg)
+    elif tokens is None and build_budget_usd is _BUDGET_UNSET:
+        # Explicit None budget_tokens + unset override → no budget (non-build).
+        tokens = None
     return build_grok_cmd(
         prompt,
         cwd,
@@ -2130,6 +2262,7 @@ def build_driver_cmd(
         permission_mode=permission_mode or g.get("permissionMode") or "acceptEdits",
         model=g.get("model") or "",
         reasoning_effort=g.get("reasoningEffort") or "",
+        budget_tokens=tokens,
     )
 
 
@@ -2263,6 +2396,7 @@ def _run_grok_once(
     model: str = "",
     reasoning_effort: str = "",
     recorder=None,
+    budget_tokens: Optional[int] = None,
 ) -> dict:
     """Single attempt at a headless Grok turn. See ``run_grok``."""
     cmd = build_grok_cmd(
@@ -2273,6 +2407,7 @@ def _run_grok_once(
         permission_mode=permission_mode,
         model=model,
         reasoning_effort=reasoning_effort,
+        budget_tokens=budget_tokens,
     )
     return _run_cli_once(
         cmd,
@@ -2331,6 +2466,7 @@ def run_grok(
     model: str = "",
     reasoning_effort: str = "",
     recorder=None,
+    budget_tokens: Optional[int] = None,
 ) -> dict:
     """Run one headless Grok turn, streaming progress via ``on_line``.
 
@@ -2340,6 +2476,8 @@ def run_grok(
 
     If a stored ``session_id`` fails to resume (e.g. leftover Claude session
     ids from before the swap), we retry once with a fresh session.
+
+    ``budget_tokens`` (when set) wraps the prompt as ``/goal … --budget N``.
     """
     emit = on_line or (lambda _s: None)
     result = _run_grok_once(
@@ -2353,6 +2491,7 @@ def run_grok(
         model=model,
         reasoning_effort=reasoning_effort,
         recorder=recorder,
+        budget_tokens=budget_tokens,
     )
     if result["error"] and session_id and _looks_like_session_error(result["error"]):
         emit("Session resume failed — starting a fresh Grok session…")
@@ -2369,6 +2508,7 @@ def run_grok(
             model=model,
             reasoning_effort=reasoning_effort,
             recorder=recorder,
+            budget_tokens=budget_tokens,
         )
     return result
 
@@ -2432,11 +2572,17 @@ def run_agent(
     timeout: int = PLAN_TIMEOUT,
     settings: Optional[dict] = None,
     recorder=None,
+    apply_build_budget: bool = False,
+    build_budget_usd: Any = _BUDGET_UNSET,
 ) -> dict:
     """Run one agent turn with the currently selected driver.
 
     All plan/build/refine/improve/consolidate jobs should call this so switching
     drivers in settings cannot leave a job hard-coded to Grok.
+
+    When ``apply_build_budget`` is True and the driver is Grok, a dollar budget
+    is resolved (per-build override or ``grok.maxBuildBudgetUsd``) and converted
+    to tokens for ``/goal --budget``. Claude builds ignore budget entirely.
     """
     cfg = normalize_settings(settings if settings is not None else load_settings())
     driver = cfg["driver"]
@@ -2468,6 +2614,28 @@ def run_agent(
         )
     g = cfg["grok"]
     emit(f"Driver: Grok Build ({g.get('model') or 'default'})")
+    budget_tokens: Optional[int] = None
+    if apply_build_budget:
+        budget_tokens = resolve_build_budget_tokens(
+            override=build_budget_usd, settings=cfg
+        )
+        if budget_tokens is not None:
+            # Recover the dollar figure for the log line (override or settings).
+            usd_src = (
+                build_budget_usd
+                if build_budget_usd is not _BUDGET_UNSET
+                else g.get("maxBuildBudgetUsd")
+            )
+            usd_amt = parse_budget_usd(usd_src)
+            if usd_amt is not None:
+                emit(
+                    f"Build budget: ${usd_amt:g} ≈ {budget_tokens:,} tokens "
+                    f"(goal --budget)"
+                )
+            else:
+                emit(f"Build budget: {budget_tokens:,} tokens (goal --budget)")
+        else:
+            emit("Build budget: unlimited")
     if recorder is not None:
         recorder.update(
             driver=DRIVER_GROK,
@@ -2487,6 +2655,7 @@ def run_agent(
         model=g.get("model") or "",
         reasoning_effort=g.get("reasoningEffort") or "",
         recorder=recorder,
+        budget_tokens=budget_tokens,
     )
 
 

@@ -43,6 +43,8 @@ class SettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(s["driver"], "grok")
         self.assertIn("model", s["grok"])
         self.assertIn("model", s["claude"])
+        self.assertIn("maxBuildBudgetUsd", s["grok"])
+        self.assertEqual(s["grok"]["maxBuildBudgetUsd"], "")
 
     def test_save_and_reload_roundtrip(self) -> None:
         saved = agent.save_settings(
@@ -74,6 +76,87 @@ class SettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(s["driver"], "claude")
         s2 = agent.normalize_settings({"driver": "Grok Build"})
         self.assertEqual(s2["driver"], "grok")
+
+    def test_max_build_budget_usd_roundtrip(self) -> None:
+        """Dollar budget persists via the same normalize/save/load path as UI."""
+        saved = agent.save_settings(
+            {
+                "driver": "grok",
+                "grok": {"maxBuildBudgetUsd": 5},
+            }
+        )
+        self.assertEqual(saved["grok"]["maxBuildBudgetUsd"], "5")
+        reloaded = agent.load_settings()
+        self.assertEqual(reloaded["grok"]["maxBuildBudgetUsd"], "5")
+        disk = json.loads(self.settings_path.read_text())
+        self.assertEqual(disk["grok"]["maxBuildBudgetUsd"], "5")
+
+        # Clear → unlimited
+        cleared = agent.save_settings(
+            {"driver": "grok", "grok": {"maxBuildBudgetUsd": ""}}
+        )
+        self.assertEqual(cleared["grok"]["maxBuildBudgetUsd"], "")
+        self.assertIsNone(
+            agent.dollars_to_budget_tokens(cleared["grok"]["maxBuildBudgetUsd"])
+        )
+
+        # null also clears
+        nulled = agent.save_settings(
+            {"driver": "grok", "grok": {"maxBuildBudgetUsd": None}}
+        )
+        self.assertEqual(nulled["grok"]["maxBuildBudgetUsd"], "")
+
+
+class BudgetConversionTests(unittest.TestCase):
+    """Shipped dollars→tokens helper (no re-implementation in the test)."""
+
+    def test_positive_dollars_yield_positive_int_tokens(self) -> None:
+        for usd in (1, 1.0, "1", "$1", 0.5, "0.50", 2.25):
+            tokens = agent.dollars_to_budget_tokens(usd)
+            self.assertIsInstance(tokens, int, msg=repr(usd))
+            self.assertGreater(tokens, 0, msg=repr(usd))
+
+        # Monotonic: more dollars → more tokens
+        self.assertGreater(
+            agent.dollars_to_budget_tokens(2), agent.dollars_to_budget_tokens(1)
+        )
+        # Half dollar is half of one dollar (rate is linear)
+        one = agent.dollars_to_budget_tokens(1)
+        half = agent.dollars_to_budget_tokens(0.5)
+        self.assertEqual(half, one // 2)
+        # Rate constant is exposed and used
+        self.assertEqual(
+            agent.dollars_to_budget_tokens(1), agent.TOKENS_PER_USD
+        )
+
+    def test_unlimited_inputs_yield_none(self) -> None:
+        for val in (None, "", "  ", 0, 0.0, "0", -1, "-5", "abc", float("nan")):
+            self.assertIsNone(
+                agent.dollars_to_budget_tokens(val), msg=repr(val)
+            )
+            self.assertIsNone(agent.parse_budget_usd(val), msg=repr(val))
+
+    def test_resolve_prefers_override_then_settings(self) -> None:
+        cfg = agent.normalize_settings(
+            {"driver": "grok", "grok": {"maxBuildBudgetUsd": "3"}}
+        )
+        # Override wins
+        self.assertEqual(
+            agent.resolve_build_budget_tokens(override=1, settings=cfg),
+            agent.dollars_to_budget_tokens(1),
+        )
+        # Explicit unlimited override beats settings default
+        self.assertIsNone(
+            agent.resolve_build_budget_tokens(override=None, settings=cfg)
+        )
+        self.assertIsNone(
+            agent.resolve_build_budget_tokens(override="", settings=cfg)
+        )
+        # Unset override → settings
+        self.assertEqual(
+            agent.resolve_build_budget_tokens(settings=cfg),
+            agent.dollars_to_budget_tokens(3),
+        )
 
 
 class DriverDispatchTests(unittest.TestCase):
@@ -107,6 +190,99 @@ class DriverDispatchTests(unittest.TestCase):
         self.assertIn("high", cmd)
         self.assertIn("--permission-mode", cmd)
         self.assertIn("bypassPermissions", cmd)
+        # Non-build path: no goal budget wrapping
+        p_idx = cmd.index("-p")
+        self.assertNotIn("--budget", cmd[p_idx + 1])
+        self.assertFalse(cmd[p_idx + 1].startswith("/goal"))
+
+    def test_grok_build_cmd_includes_budget_from_dollars(self) -> None:
+        """Drive real build_grok_cmd / build_driver_cmd with a dollar budget."""
+        cwd = Path("/tmp/fake-topic")
+        usd = 1.0
+        tokens = agent.dollars_to_budget_tokens(usd)
+        self.assertIsNotNone(tokens)
+        assert tokens is not None
+
+        cmd = agent.build_grok_cmd(
+            "build the app from PLAN.md",
+            cwd,
+            budget_tokens=tokens,
+        )
+        self.assertEqual(cmd[0], agent.GROK_BIN)
+        self.assertIn("-p", cmd)
+        prompt = cmd[cmd.index("-p") + 1]
+        self.assertTrue(prompt.startswith("/goal "), prompt)
+        self.assertIn("--budget", prompt)
+        # Token value must equal the conversion helper (not a hard-coded argv)
+        self.assertIn(str(tokens), prompt)
+        self.assertIn("build the app from PLAN.md", prompt)
+
+        # Via build_driver_cmd with build_budget_usd override
+        cmd2 = agent.build_driver_cmd(
+            "grok",
+            "build the app from PLAN.md",
+            cwd,
+            settings={"driver": "grok", "grok": {"maxBuildBudgetUsd": ""}},
+            build_budget_usd=usd,
+        )
+        prompt2 = cmd2[cmd2.index("-p") + 1]
+        self.assertIn("--budget", prompt2)
+        self.assertIn(str(tokens), prompt2)
+
+        # Settings default when override unset but budget_tokens passed via resolve
+        cmd3 = agent.build_driver_cmd(
+            "grok",
+            "build the app from PLAN.md",
+            cwd,
+            settings={"driver": "grok", "grok": {"maxBuildBudgetUsd": "0.5"}},
+            budget_tokens=agent.resolve_build_budget_tokens(
+                settings={"driver": "grok", "grok": {"maxBuildBudgetUsd": "0.5"}}
+            ),
+        )
+        half = agent.dollars_to_budget_tokens(0.5)
+        prompt3 = cmd3[cmd3.index("-p") + 1]
+        self.assertIn(str(half), prompt3)
+        self.assertIn("--budget", prompt3)
+
+    def test_grok_build_cmd_omits_budget_when_unlimited(self) -> None:
+        cwd = Path("/tmp/fake-topic")
+        for tokens in (None, 0, -1):
+            cmd = agent.build_grok_cmd(
+                "build the app",
+                cwd,
+                budget_tokens=tokens,  # type: ignore[arg-type]
+            )
+            prompt = cmd[cmd.index("-p") + 1]
+            self.assertEqual(prompt, "build the app")
+            self.assertNotIn("--budget", prompt)
+            self.assertFalse(prompt.startswith("/goal"))
+
+        cmd2 = agent.build_driver_cmd(
+            "grok",
+            "build the app",
+            cwd,
+            settings={"driver": "grok", "grok": {"maxBuildBudgetUsd": ""}},
+            build_budget_usd=None,  # explicit unlimited
+        )
+        prompt2 = cmd2[cmd2.index("-p") + 1]
+        self.assertNotIn("--budget", prompt2)
+
+    def test_claude_cmd_never_gets_budget(self) -> None:
+        cwd = Path("/tmp/fake-topic")
+        cmd = agent.build_driver_cmd(
+            "claude",
+            "build this",
+            cwd,
+            settings={
+                "driver": "claude",
+                "claude": {"model": "haiku", "dangerouslySkipPermissions": True},
+            },
+            build_budget_usd=5,
+            budget_tokens=999_999,
+        )
+        joined = " ".join(cmd)
+        self.assertNotIn("--budget", joined)
+        self.assertNotIn("/goal", joined)
 
     def test_claude_cmd_includes_model_and_stream_json(self) -> None:
         cwd = Path("/tmp/fake-topic")
@@ -151,6 +327,42 @@ class DriverDispatchTests(unittest.TestCase):
         rg.assert_called_once()
         rc.assert_not_called()
         self.assertTrue(any("Grok Build" in ln for ln in lines))
+
+    def test_run_agent_build_budget_passed_to_grok(self) -> None:
+        lines: list = []
+        settings = {
+            "driver": "grok",
+            "grok": {"model": "grok-4", "maxBuildBudgetUsd": "1"},
+        }
+        expected = agent.dollars_to_budget_tokens(1)
+        with mock.patch.object(
+            agent, "run_grok", return_value={"sessionId": "g1", "error": None}
+        ) as rg:
+            agent.run_agent(
+                "build it",
+                Path("."),
+                on_line=lines.append,
+                settings=settings,
+                apply_build_budget=True,
+            )
+        self.assertEqual(rg.call_args.kwargs["budget_tokens"], expected)
+        self.assertTrue(any("Build budget" in ln and "tokens" in ln for ln in lines))
+
+        # Explicit unlimited override
+        lines.clear()
+        with mock.patch.object(
+            agent, "run_grok", return_value={"sessionId": "g1", "error": None}
+        ) as rg:
+            agent.run_agent(
+                "build it",
+                Path("."),
+                on_line=lines.append,
+                settings=settings,
+                apply_build_budget=True,
+                build_budget_usd=None,
+            )
+        self.assertIsNone(rg.call_args.kwargs["budget_tokens"])
+        self.assertTrue(any("unlimited" in ln.lower() for ln in lines))
 
     def test_run_agent_routes_to_claude(self) -> None:
         lines: list = []
@@ -239,6 +451,37 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(r4.json()["grok"]["model"], "grok-3-mini")
         self.assertEqual(r4.json()["grok"]["reasoningEffort"], "medium")
 
+    def test_build_budget_settings_api_roundtrip(self) -> None:
+        r = self.client.put(
+            "/api/settings",
+            json={
+                "driver": "grok",
+                "grok": {"maxBuildBudgetUsd": 2.5},
+            },
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["grok"]["maxBuildBudgetUsd"], "2.5")
+
+        r2 = self.client.get("/api/settings")
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.json()["grok"]["maxBuildBudgetUsd"], "2.5")
+        # Same value the conversion helper would use
+        self.assertEqual(
+            agent.dollars_to_budget_tokens(r2.json()["grok"]["maxBuildBudgetUsd"]),
+            agent.dollars_to_budget_tokens(2.5),
+        )
+
+        # Clear to unlimited
+        r3 = self.client.put(
+            "/api/settings",
+            json={"driver": "grok", "grok": {"maxBuildBudgetUsd": ""}},
+        )
+        self.assertEqual(r3.status_code, 200)
+        self.assertEqual(r3.json()["grok"]["maxBuildBudgetUsd"], "")
+        self.assertIsNone(
+            agent.dollars_to_budget_tokens(r3.json()["grok"]["maxBuildBudgetUsd"])
+        )
+
 
 class StreamCoalescerTests(unittest.TestCase):
     def test_claude_assistant_text_emits_lines(self) -> None:
@@ -255,6 +498,38 @@ class StreamCoalescerTests(unittest.TestCase):
         c.push({"type": "result", "subtype": "success", "is_error": False})
         self.assertTrue(any("hello world" in ln for ln in lines))
         self.assertTrue(any("finished" in ln for ln in lines))
+
+
+class BudgetUxStaticTests(unittest.TestCase):
+    """Structural check: PlanModal / SettingsModal expose dollar budget UX."""
+
+    ROOT = BACKEND.parent
+
+    def test_plan_modal_budget_near_approve_build(self) -> None:
+        src = (self.ROOT / "frontend/src/components/PlanModal.tsx").read_text()
+        self.assertIn("Approve & build", src)
+        self.assertIn("budgetUsd", src)
+        self.assertIn("showGrokBudget", src)
+        # Budget control sits in the same footer as the build action.
+        footer_idx = src.rfind("Approve & build")
+        # Label copy next to the $ input (not the earlier code comment).
+        budget_idx = src.rfind("· empty = unlimited")
+        self.assertGreater(footer_idx, 0)
+        self.assertGreater(budget_idx, 0)
+        self.assertLess(abs(footer_idx - budget_idx), 2000)
+        self.assertIn('placeholder="Unlimited"', src)
+
+    def test_settings_modal_grok_max_build_budget(self) -> None:
+        src = (self.ROOT / "frontend/src/components/SettingsModal.tsx").read_text()
+        self.assertIn("Max build budget", src)
+        self.assertIn("maxBuildBudgetUsd", src)
+        self.assertIn("empty = unlimited", src)
+
+    def test_main_build_job_threads_budget(self) -> None:
+        src = (BACKEND / "main.py").read_text()
+        self.assertIn("apply_build_budget=True", src)
+        self.assertIn("build_budget_usd", src)
+        self.assertIn("budgetUsd", src)
 
 
 if __name__ == "__main__":

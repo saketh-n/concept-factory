@@ -409,6 +409,36 @@ export default function SettingsModal({ onClose }: Props) {
                       ))}
                     </select>
                   </label>
+                  <label className="block">
+                    <span className="mb-1 flex items-center justify-between gap-2 text-[12px] font-medium text-slate-400">
+                      <span>Max build budget</span>
+                      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-600">
+                        USD · empty = unlimited
+                      </span>
+                    </span>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-slate-500">
+                        $
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        inputMode="decimal"
+                        placeholder="Unlimited"
+                        className="field w-full pl-7"
+                        value={draft.grok.maxBuildBudgetUsd ?? ""}
+                        onChange={(e) =>
+                          patchGrok({ maxBuildBudgetUsd: e.target.value })
+                        }
+                      />
+                    </div>
+                    <span className="mt-1 block text-[11px] leading-relaxed text-slate-600">
+                      Caps each Approve &amp; build via Grok&apos;s goal token
+                      budget. Leave empty for no cap. Pre-fills the build
+                      dialog; you can still override per build.
+                    </span>
+                  </label>
                   <p className="text-[11.5px] leading-relaxed text-slate-600">
                     Unattended runs always pass{" "}
                     <code className="text-slate-500">--always-approve</code>.

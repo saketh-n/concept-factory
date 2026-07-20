@@ -108,24 +108,58 @@ concept-factory/
 
 ## Quick start
 
-Prerequisites:
+**Prerequisites**
 
-- [Grok CLI](https://grok.x.ai) on your `PATH` (or set `GROK_BIN`), authenticated via
-  `grok login`, plus `XAI_API_KEY` in the environment
-- `XAI_MANAGEMENT_API_KEY` (a Management Key from console.x.ai → Settings) for the
-  credits HUD; optional `XAI_TEAM_ID` if auto-detect fails
+- Grok CLI (`grok` binary) on your `$PATH` (or set `GROK_BIN=/path/to/grok`). Run `grok login` once.
+- `XAI_API_KEY` in your shell environment (or in `~/.grok/config.toml`).
+- `XAI_MANAGEMENT_API_KEY` (create a Management Key at https://console.x.ai → Settings → API Keys). Optional: `XAI_TEAM_ID`.
+- Node.js 20+ and Python 3.9+.
 
 ```bash
+# One command to rule them all
 ./launch.sh
 ```
 
-- Dashboard: http://localhost:5173
-- Backend API docs: http://localhost:8000/docs
+This creates a Python venv, installs deps, runs `npm install` in frontend/, starts the FastAPI backend (port 8000) + Vite dev server (port 5173), and opens the dashboard.
 
-The script creates a Python virtualenv, installs backend deps, runs `npm install` if
-needed, and starts both dev servers. `Ctrl+C` stops both. State (the meta prompt and
-all topics) persists to `backend/data.json` and is reconciled against the workspace on
-startup.
+- **Dashboard**: http://localhost:5173 (3D overworld + plan review + Runs metrics)
+- **Backend API docs**: http://localhost:8000/docs
+- **Stop**: Ctrl+C in the terminal (kills both processes cleanly)
+
+State lives in `backend/data.json`. All generated concepts land in `backend/workspace/`.
+
+### Grok / Help features
+
+- **In-app Help**: Click the **?** button (top-right) for keyboard shortcuts, slash commands, troubleshooting, and Grok-specific tips.
+- **Project skills**: The `concept-repo-builder` skill (in `meta-agent/.claude/skills/`) is auto-loaded by the harness for all generation tasks. See `meta-agent/README.md`.
+- **CLI help cache**: Backend caches `grok --help` / `claude --help` output for speed (see `backend/agent.py`).
+- **Plan mode**: Use the floating Workbench tray or `/plan` in the Grok CLI for structured generation.
+
+See **Troubleshooting** and **Keyboard Shortcuts** sections below for common issues and power-user tips.
+
+## Troubleshooting
+
+**Common issues & fixes**
+
+- **"No Grok binary found"**: Run `which grok` or set `GROK_BIN=$(which grok)` . The settings catalog probes `grok --help`.
+- **Credits HUD shows $0**: Double-check `XAI_MANAGEMENT_API_KEY`. Try the Refresh button in Settings.
+- **Builds fail on first run**: `npm install` can be slow on cold cache — the launcher retries. Check `frontend/dist/` after a build.
+- **Agent loops forever**: Wall-clock timeouts in `backend/runs.py` kill after ~10 min. Check `backend/runs/<id>/log.txt`.
+- **Dashboard stuck on "planning"**: Refresh the page or restart `./launch.sh`. State is reconciled from disk on startup.
+- **Permission errors**: The backend uses `--permission-mode` from Grok CLI. See Settings modal.
+
+**Grok-specific tips (this project uses Grok Build heavily)**
+
+- Use the `concept-repo-builder` skill for new CS topics.
+- In the Grok CLI: `/plan`, `/build`, `/improve`, or just describe the concept.
+- Keyboard shortcuts (also in the in-app Help modal):
+  - `?` — Open help
+  - `Cmd/Ctrl + K` — Focus search / quick add topic
+  - `Esc` — Close modals
+  - `1/2/3` — Switch board views (Cards / Map / Runs)
+- For headless parallel runs the harness manages concurrency and verification gates.
+
+Report issues in the Runs dashboard (export JSON/NDJSON/logs with one click).
 
 ## Roadmap
 

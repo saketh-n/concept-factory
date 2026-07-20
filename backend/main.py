@@ -690,7 +690,7 @@ def _consolidate_job(new_id: str, src_plans: list, src_ids: List[str], meta: str
         save_state(state)
 
 
-def _build_job(topic_id: str) -> None:
+def _build_job(topic_id: str, build_budget_usd: object = agent._BUDGET_UNSET) -> None:
     with _lock:
         topic = _find(topic_id)
         if not topic:
@@ -717,6 +717,8 @@ def _build_job(topic_id: str) -> None:
         dangerously_skip=True,
         timeout=agent.BUILD_TIMEOUT,
         recorder=recorder,
+        apply_build_budget=True,
+        build_budget_usd=build_budget_usd,
     )
     if result["error"]:
         recorder.finish("error", error=result["error"], exit_code=result.get("exitCode"))
@@ -954,8 +956,29 @@ def edit_plan(topic_id: str, payload: PlanEdit) -> Topic:
     return topic
 
 
+class BuildRequest(BaseModel):
+    """Optional per-build dollar budget (Grok Build only).
+
+    * Field omitted → use global ``grok.maxBuildBudgetUsd`` from settings.
+    * ``null`` / empty → unlimited for this build.
+    * Positive number → hard cap (converted to goal tokens server-side).
+    """
+    budgetUsd: Optional[float] = None
+
+
 @app.post("/api/topics/{topic_id}/build", response_model=Topic)
-def build_topic(topic_id: str) -> Topic:
+async def build_topic(topic_id: str, request: Request) -> Topic:
+    # Parse body loosely so older clients that POST with an empty body still work.
+    build_budget_usd: object = agent._BUDGET_UNSET
+    try:
+        raw = await request.body()
+        if raw and raw.strip() and raw.strip() not in (b"null", b"undefined"):
+            data = json.loads(raw)
+            if isinstance(data, dict) and "budgetUsd" in data:
+                build_budget_usd = data.get("budgetUsd")
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        pass
+
     with _lock:
         topic = _find(topic_id)
         if not topic:
@@ -965,7 +988,7 @@ def build_topic(topic_id: str) -> Topic:
         topic.planStatus = "building"
         topic.planError = ""
         save_state(state)
-    agent.EXECUTOR.submit(_build_job, topic_id)
+    agent.EXECUTOR.submit(_build_job, topic_id, build_budget_usd)
     return topic
 
 

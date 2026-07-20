@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, conceptUrl, type Commit, type Topic } from "../api";
+import {
+  api,
+  conceptUrl,
+  type AgentDriver,
+  type Commit,
+  type Topic,
+} from "../api";
 
 function relTime(iso: string): string {
   const then = new Date(iso).getTime();
@@ -168,18 +174,51 @@ function StreamLog({ topicId }: { topicId: string }) {
   );
 }
 
+/** Parse the budget field: empty → null (unlimited); invalid → null. */
+function parseBudgetInput(raw: string): number | null {
+  const t = raw.trim().replace(/^\$/, "").replace(/,/g, "");
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
 export default function PlanModal({ topic, onSaved, onClose }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(topic.plan);
   const [refine, setRefine] = useState("");
   const [saving, setSaving] = useState(false);
+  const [driver, setDriver] = useState<AgentDriver>("grok");
+  /** Dollar budget for this build; empty string = unlimited. Prefills from settings. */
+  const [budgetUsd, setBudgetUsd] = useState("");
+  const [building, setBuilding] = useState(false);
 
   const busy = BUSY.includes(topic.planStatus);
   const built = topic.planStatus === "built";
+  const showGrokBudget = driver === "grok";
 
   useEffect(() => {
     if (!editing) setDraft(topic.plan);
   }, [topic.plan, editing]);
+
+  // Load driver + default max build budget for the Approve & build footer.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getSettings()
+      .then((s) => {
+        if (!alive) return;
+        setDriver(s.driver === "claude" ? "claude" : "grok");
+        const def = s.grok?.maxBuildBudgetUsd ?? "";
+        setBudgetUsd(def === undefined || def === null ? "" : String(def));
+      })
+      .catch(() => {
+        /* keep defaults */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [topic.id]);
 
   const save = async () => {
     setSaving(true);
@@ -197,7 +236,24 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
     setRefine("");
   };
 
-  const build = async () => onSaved(await api.buildTopic(topic.id));
+  const build = async () => {
+    setBuilding(true);
+    try {
+      if (showGrokBudget) {
+        // Always send budgetUsd so empty clears to unlimited for this build
+        // rather than silently re-applying a stale global default.
+        onSaved(
+          await api.buildTopic(topic.id, {
+            budgetUsd: parseBudgetInput(budgetUsd),
+          })
+        );
+      } else {
+        onSaved(await api.buildTopic(topic.id));
+      }
+    } finally {
+      setBuilding(false);
+    }
+  };
   const viewConcept = () => window.open(conceptUrl(topic.slug), "_blank");
 
   const heading = busy
@@ -312,26 +368,58 @@ export default function PlanModal({ topic, onSaved, onClose }: Props) {
                 Refine
               </button>
             </div>
-            <div className="flex items-center justify-between">
-              {editing ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div className="min-w-0 flex-1">
+                {editing ? (
+                  <button
+                    onClick={save}
+                    disabled={saving}
+                    className="btn-secondary !border-violet-400/40 !bg-violet-400/10 !text-violet-200"
+                  >
+                    {saving ? "Saving…" : "Save edits"}
+                  </button>
+                ) : (
+                  <span className="text-xs text-slate-500">
+                    Edit manually, refine with a prompt, or approve to build.
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-end justify-end gap-2.5">
+                {showGrokBudget && (
+                  <label className="block">
+                    <span className="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                      Budget
+                      <span className="normal-case tracking-normal text-slate-600">
+                        · empty = unlimited
+                      </span>
+                    </span>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-sm text-slate-500">
+                        $
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        inputMode="decimal"
+                        placeholder="Unlimited"
+                        title="Max spend for this Grok Build run. Leave empty for no cap."
+                        className="field w-[7.5rem] pl-6 text-sm"
+                        value={budgetUsd}
+                        onChange={(e) => setBudgetUsd(e.target.value)}
+                        disabled={building}
+                      />
+                    </div>
+                  </label>
+                )}
                 <button
-                  onClick={save}
-                  disabled={saving}
-                  className="btn-secondary !border-violet-400/40 !bg-violet-400/10 !text-violet-200"
+                  onClick={build}
+                  disabled={building}
+                  className="btn-primary"
                 >
-                  {saving ? "Saving…" : "Save edits"}
+                  {building ? "Starting…" : "Approve & build"}
                 </button>
-              ) : (
-                <span className="text-xs text-slate-500">
-                  Edit manually, refine with a prompt, or approve to build.
-                </span>
-              )}
-              <button
-                onClick={build}
-                className="btn-primary"
-              >
-                Approve & build
-              </button>
+              </div>
             </div>
           </div>
         ) : null}
