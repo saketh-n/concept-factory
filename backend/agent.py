@@ -1,14 +1,16 @@
-"""Agent drivers for Concept Factory.
+"""Agent driver for Concept Factory.
 
 Each topic card gets its own subfolder under ``workspace/`` and its own
-headless agent instance (Grok Build or Claude Code). We never point the
-agent at the meta-agent template folder (that would blow up token usage
-across ~100 parallel runs); instead the house style is condensed into the
-prompt below.
+headless **Grok Build** instance. We never point the agent at the meta-agent
+template folder (that would blow up token usage across ~100 parallel runs);
+instead the house style is condensed into the prompt below.
 
-This module is a *pure driver*: it knows how to run the selected CLI and
-build prompts. Topic state lives in main.py; global driver settings live
-in ``settings.json`` next to this module.
+This module is a *pure driver*: it knows how to run the Grok CLI and build
+prompts. Topic state lives in main.py; global driver settings live in
+``settings.json`` next to this module.
+
+Claude Code was removed as a selectable factory driver; stale
+``driver: "claude"`` settings coerce to Grok on load/save.
 """
 from __future__ import annotations
 
@@ -33,19 +35,21 @@ TEMPLATE_DIR = Path(__file__).parents[1] / "meta-agent" / "template"
 WORKSPACE = Path(__file__).parent / "workspace"
 WORKSPACE.mkdir(exist_ok=True)
 
-# Path to the Grok / Claude CLIs. Override with GROK_BIN / CLAUDE_BIN if they
-# aren't on PATH (common install locations: ~/.grok/bin/grok, ~/.local/bin/claude).
+# Path to the Grok CLI. Override with GROK_BIN if it isn't on PATH
+# (common install: ~/.grok/bin/grok).
 GROK_BIN = os.environ.get("GROK_BIN") or shutil.which("grok") or "grok"
+# Retained for legacy helpers/tests only — not used by factory jobs.
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
 
-# Global factory settings (driver + per-driver options). Separate from data.json
-# so topic cards and driver config don't thrash the same lock/file.
+# Global factory settings (Grok options). Separate from data.json so topic
+# cards and driver config don't thrash the same lock/file.
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
 _settings_lock = threading.Lock()
 
 DRIVER_GROK = "grok"
+# Historical id only (run history labels); never selected as active driver.
 DRIVER_CLAUDE = "claude"
-DRIVERS = (DRIVER_GROK, DRIVER_CLAUDE)
+DRIVERS = (DRIVER_GROK,)
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "driver": DRIVER_GROK,
@@ -57,13 +61,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         # Max $ spend per Approve & build (Grok goal --budget). Empty = unlimited.
         "maxBuildBudgetUsd": "",
     },
-    "claude": {
-        # Empty → follow Claude Code's currently selected model (not a hard-wired alias).
-        "model": "",
-        "permissionMode": "bypassPermissions",
-        "effort": "",  # empty | low | medium | high | xhigh | max
-        "dangerouslySkipPermissions": True,
-    },
 }
 
 # Approximate blended tokens per USD for Grok Build goal budgets.
@@ -71,8 +68,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 # tokens. Not exact billing parity (cache hits / model mix shift the real rate).
 TOKENS_PER_USD = 1_000_000
 
-# Historical bootstrap default that was hard-coded before live CLI current.
-# Treated as "unset / follow CLI" so a stale sonnet doesn't mask fable, etc.
+# Historical Claude bootstrap default (legacy helpers only).
 _CLAUDE_BOOTSTRAP_MODELS = frozenset({"", "sonnet"})
 
 
@@ -170,45 +166,33 @@ def resolve_build_budget_tokens(
 
 
 def normalize_settings(raw: Optional[dict] = None) -> dict:
-    """Merge partial/unknown settings into a complete, valid settings object."""
+    """Merge partial/unknown settings into a complete, valid settings object.
+
+    Grok Build is the only factory driver. Any ``driver`` value (including
+    stale ``claude`` / ``Claude Code``) is coerced to ``grok``. A legacy
+    ``claude`` section in stored JSON is ignored and never re-emitted.
+    """
     base = default_settings()
     if not raw or not isinstance(raw, dict):
         return base
-    driver = raw.get("driver") or base["driver"]
-    if driver not in DRIVERS:
-        # Accept friendly aliases from the UI.
-        alias = str(driver).strip().lower().replace("_", " ").replace("-", " ")
-        if alias in ("grok build", "grok", "xai"):
-            driver = DRIVER_GROK
-        elif alias in ("claude code", "claude", "anthropic"):
-            driver = DRIVER_CLAUDE
-        else:
-            driver = base["driver"]
-    base["driver"] = driver
-    for key in ("grok", "claude"):
-        section = raw.get(key)
-        if isinstance(section, dict):
-            for k, v in section.items():
-                if k not in base[key]:
-                    continue
-                # maxBuildBudgetUsd: null/None clears to unlimited ("").
-                if key == "grok" and k == "maxBuildBudgetUsd":
-                    base[key][k] = format_budget_usd_for_storage(v)
-                    continue
-                base[key][k] = v if v is not None else base[key][k]
-    # Coerce booleans that may arrive as strings from forms.
-    cskip = base["claude"].get("dangerouslySkipPermissions")
-    if isinstance(cskip, str):
-        base["claude"]["dangerouslySkipPermissions"] = cskip.strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+    # Always Grok — drop dual-driver selection entirely.
+    base["driver"] = DRIVER_GROK
+    section = raw.get("grok")
+    if isinstance(section, dict):
+        for k, v in section.items():
+            if k not in base["grok"]:
+                continue
+            # maxBuildBudgetUsd: null/None clears to unlimited ("").
+            if k == "maxBuildBudgetUsd":
+                base["grok"][k] = format_budget_usd_for_storage(v)
+                continue
+            base["grok"][k] = v if v is not None else base["grok"][k]
     # Final normalize of budget field even when section was absent/partial.
     base["grok"]["maxBuildBudgetUsd"] = format_budget_usd_for_storage(
         base["grok"].get("maxBuildBudgetUsd")
     )
+    # Never persist deprecated Claude fields on the normalized object.
+    base.pop("claude", None)
     return base
 
 
@@ -1182,12 +1166,12 @@ def resolve_model_selection(
     stored: str,
     cli_current: str,
     *,
-    driver: str = DRIVER_CLAUDE,
+    driver: str = DRIVER_GROK,
     follow_cli: bool = False,
 ) -> str:
     """Choose which model id the settings UI / jobs should use.
 
-    - Empty stored (or historical Claude bootstrap ``sonnet``) → live CLI current.
+    - Empty stored → live CLI current.
     - ``follow_cli=True`` (catalog refresh) → always prefer live CLI current.
     - Otherwise keep an explicit factory override.
     """
@@ -1195,6 +1179,7 @@ def resolve_model_selection(
     cli_current = (cli_current or "").strip()
     if follow_cli and cli_current:
         return cli_current
+    # Legacy: historical Claude bootstrap "sonnet" treated as unset if ever passed.
     if driver == DRIVER_CLAUDE and stored in _CLAUDE_BOOTSTRAP_MODELS:
         return cli_current or stored
     if not stored:
@@ -1208,16 +1193,11 @@ def apply_cli_current_to_settings(
     *,
     follow_cli: bool = False,
 ) -> dict:
-    """Return settings with model fields resolved against catalog current models."""
+    """Return settings with Grok model fields resolved against catalog current."""
     s = normalize_settings(settings)
     grok_cur = (
         (catalog.get("grok") or {}).get("currentModel")
         or (catalog.get("grok") or {}).get("defaultModel")
-        or ""
-    )
-    claude_cur = (
-        (catalog.get("claude") or {}).get("currentModel")
-        or (catalog.get("claude") or {}).get("defaultModel")
         or ""
     )
     s["grok"]["model"] = resolve_model_selection(
@@ -1226,28 +1206,18 @@ def apply_cli_current_to_settings(
         driver=DRIVER_GROK,
         follow_cli=follow_cli,
     )
-    s["claude"]["model"] = resolve_model_selection(
-        s["claude"].get("model") or "",
-        claude_cur,
-        driver=DRIVER_CLAUDE,
-        follow_cli=follow_cli,
-    )
-    s["cliCurrent"] = {"grok": grok_cur, "claude": claude_cur}
+    s["cliCurrent"] = {"grok": grok_cur}
     return s
 
 
 def discover_settings_catalog(deep: bool = False) -> dict:
-    """Run discovery for both drivers in parallel.
+    """Discover Grok Build options for the settings UI.
 
     Default is file-first (no spawns when help cache is warm). ``deep=True``
-    re-runs ``--help`` and the Claude PTY probe for the full live model list.
+    re-runs ``grok --help`` / model probes. Claude CLI is not queried.
     """
     fetched_at = _time.time()
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_grok = pool.submit(discover_grok_options, deep)
-        f_claude = pool.submit(discover_claude_options, deep)
-        grok = f_grok.result()
-        claude = f_claude.result()
+    grok = discover_grok_options(deep)
     elapsed_ms = round((_time.time() - fetched_at) * 1000, 1)
     return {
         "fetchedAt": fetched_at,
@@ -1258,7 +1228,6 @@ def discover_settings_catalog(deep: bool = False) -> dict:
         "deep": deep,
         "cache": "none",
         "grok": grok,
-        "claude": claude,
     }
 
 
@@ -1266,9 +1235,9 @@ def get_settings_catalog(force: bool = False, deep: Optional[bool] = None) -> di
     """Return the settings option catalog, using a TTL memory cache.
 
     ``force=True`` busts the cache (refresh button) and by default also runs a
-    deep probe (``--help`` + Claude PTY for the full model list). Pass
-    ``deep=False`` with force for a cheap file-only re-read (used by background
-    revalidation). Concurrent callers share one in-flight discovery.
+    deep Grok probe. Pass ``deep=False`` with force for a cheap file-only
+    re-read (used by background revalidation). Concurrent callers share one
+    in-flight discovery.
     """
     global _catalog_cache, _catalog_cache_fetched_at
     global _catalog_inflight, _catalog_inflight_result, _catalog_inflight_error
@@ -1289,8 +1258,7 @@ def get_settings_catalog(force: bool = False, deep: Optional[bool] = None) -> di
                     out["ttlSeconds"] = CATALOG_TTL_SECONDS
                     return out
                 # Expired: serve stale immediately, revalidate in background
-                # (stale-while-revalidate) so the modal never blocks ~1s on
-                # a cold Claude PTY probe. Refresh coalesces via inflight.
+                # (stale-while-revalidate). Refresh coalesces via inflight.
                 stale_out = json.loads(json.dumps(_catalog_cache))
                 stale_out["cache"] = "memory-stale-revalidating"
                 stale_out["ageSeconds"] = round(age, 3)
@@ -1374,12 +1342,6 @@ def get_settings_catalog(force: bool = False, deep: Optional[bool] = None) -> di
                 "reasoningEfforts": [],
                 "error": str(e),
             },
-            "claude": {
-                "models": [],
-                "permissionModes": [],
-                "efforts": [],
-                "error": str(e),
-            },
         }
     finally:
         with _catalog_lock:
@@ -1401,14 +1363,9 @@ def clear_settings_catalog_cache() -> None:
 
 
 # --- Widget → CLI write-back (compile settings to CLI state) -----------------
-# The settings modal previously wrote only backend/settings.json (app-local),
-# so the CLIs' own sticky selections never changed: pick "haiku" in the widget
-# and `claude` still launches with fable. These helpers close the loop by
-# writing the same files each CLI persists its selection to — exactly the
-# files discovery *reads* — so read and write paths agree:
-#   Claude → ~/.claude/settings.json  "model"
-#   Grok   → ~/.grok/config.toml      [models] default
-# Set CF_SETTINGS_SYNC_CLI=0 to disable (tests, or per-job-only overrides).
+# Settings previously wrote only backend/settings.json (app-local). Write-back
+# mirrors the Grok model into ``~/.grok/config.toml`` so the interactive CLI
+# agrees with the widget. Set CF_SETTINGS_SYNC_CLI=0 to disable.
 
 
 def cli_sync_enabled() -> bool:
@@ -1417,30 +1374,17 @@ def cli_sync_enabled() -> bool:
 
 
 def _write_claude_cli_model(model: str) -> dict:
-    """Persist model into ``~/.claude/settings.json`` (merge, atomic replace)."""
+    """Legacy no-op retained for older tests; factory no longer syncs Claude."""
     path = Path.home() / ".claude" / "settings.json"
-    action = {"driver": DRIVER_CLAUDE, "target": str(path), "model": model}
-    try:
-        data: dict = {}
-        if path.exists():
-            try:
-                loaded = json.loads(path.read_text() or "{}")
-                if isinstance(loaded, dict):
-                    data = loaded
-            except (json.JSONDecodeError, ValueError):
-                # Don't clobber a file we can't parse.
-                return {**action, "ok": False, "changed": False,
-                        "error": "existing settings.json is not valid JSON; refusing to overwrite"}
-        if data.get("model") == model:
-            return {**action, "ok": True, "changed": False, "error": None}
-        data["model"] = model
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".cf-tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
-        tmp.replace(path)
-        return {**action, "ok": True, "changed": True, "error": None}
-    except OSError as e:
-        return {**action, "ok": False, "changed": False, "error": str(e)}
+    return {
+        "driver": DRIVER_CLAUDE,
+        "target": str(path),
+        "model": model,
+        "ok": True,
+        "changed": False,
+        "error": None,
+        "skipped": "claude-deprecated",
+    }
 
 
 def _claude_settings_path() -> Path:
@@ -1452,54 +1396,30 @@ def _grok_config_path() -> Path:
 
 
 def read_current_models() -> dict:
-    """Cheap read of the *current* model for both drivers straight from the
-    files the CLIs persist to. No process spawn, no catalog — microseconds.
-    Used by the real-time watcher so a CLI-side `/model` change surfaces in the
-    widget without a re-poll."""
+    """Cheap read of the current Grok model from CLI config (no spawn).
+
+    Used by the real-time watcher so a CLI-side ``/model`` change surfaces in
+    the widget without a re-poll.
+    """
     return {
-        "claude": {"currentModel": _read_claude_user_settings_model()},
         "grok": {"currentModel": _read_grok_config_default()},
     }
 
 
 def current_models_signature() -> str:
-    """mtime+size fingerprint of the two config files, for change detection."""
-    parts: List[str] = []
-    for p in (_claude_settings_path(), _grok_config_path()):
-        try:
-            st = p.stat()
-            parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
-        except OSError:
-            parts.append(f"{p}:-")
-    return "|".join(parts)
+    """mtime+size fingerprint of the Grok config file, for change detection."""
+    p = _grok_config_path()
+    try:
+        st = p.stat()
+        return f"{p}:{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        return f"{p}:-"
 
 
 def detect_claude_model_overrides(target_model: str) -> List[dict]:
-    """Find higher-precedence sources that would mask ~/.claude/settings.json.
-
-    Claude Code resolves the model with user settings.json as the *lowest*
-    priority, so anything below wins over the write-back and the widget should
-    warn rather than silently lose:
-      - ANTHROPIC_MODEL env var
-      - project ./.claude/settings.json ["model"]
-      - project ./.claude/settings.local.json ["model"]
-    Returns [{source, value}] for sources that disagree with ``target_model``.
-    """
-    overrides: List[dict] = []
-    env_model = os.environ.get("ANTHROPIC_MODEL", "").strip()
-    if env_model and env_model != target_model:
-        overrides.append({"source": "env:ANTHROPIC_MODEL", "value": env_model})
-    for rel in (".claude/settings.json", ".claude/settings.local.json"):
-        p = Path.cwd() / rel
-        try:
-            if p.exists():
-                d = json.loads(p.read_text() or "{}")
-                m = d.get("model") if isinstance(d, dict) else None
-                if m and str(m).strip() and str(m).strip() != target_model:
-                    overrides.append({"source": f"project:{rel}", "value": str(m).strip()})
-        except (OSError, json.JSONDecodeError, ValueError):
-            continue
-    return overrides
+    """Legacy helper — always empty now that Claude is not a factory driver."""
+    del target_model
+    return []
 
 
 def _write_grok_cli_model(model: str) -> dict:
@@ -1583,7 +1503,7 @@ def update_catalog_cache_current(driver: str, model: str) -> None:
 
 
 def sync_settings_to_cli(settings: dict) -> dict:
-    """Compile stored widget settings into CLI state (model write-back).
+    """Compile stored widget settings into Grok CLI state (model write-back).
 
     Idempotent: writes are no-ops when the CLI file already matches. Returns
     ``{"enabled": bool, "actions": [...]}`` for observability. Never raises.
@@ -1592,29 +1512,7 @@ def sync_settings_to_cli(settings: dict) -> dict:
         return {"enabled": False, "actions": []}
     s = normalize_settings(settings)
     actions: List[dict] = []
-    claude_model = (s.get("claude") or {}).get("model") or ""
     grok_model = (s.get("grok") or {}).get("model") or ""
-    # NOTE: do NOT drop "sonnet" here. _CLAUDE_BOOTSTRAP_MODELS is a *read-side*
-    # heuristic for guessing whether a *stored* default is stale; on the write
-    # path the user has explicitly chosen this model in the widget, so persist
-    # it verbatim. Only an empty selection means "leave the CLI alone".
-    if claude_model:
-        res = _write_claude_cli_model(claude_model)
-        if res.get("ok"):
-            # Verify the value actually landed (catches silent no-ops / wrong file).
-            landed = _read_claude_user_settings_model()
-            res["verified"] = landed == claude_model
-            if not res["verified"]:
-                res["error"] = (
-                    f"wrote settings.json but read back {landed!r} != {claude_model!r}"
-                )
-            # settings.json user model is the *lowest*-priority source; a higher
-            # one (env / project settings) will mask it — surface, don't lose.
-            overrides = detect_claude_model_overrides(claude_model)
-            if overrides:
-                res["overriddenBy"] = overrides
-            update_catalog_cache_current(DRIVER_CLAUDE, claude_model)
-        actions.append(res)
     if grok_model:
         res = _write_grok_cli_model(grok_model)
         actions.append(res)
@@ -2229,24 +2127,14 @@ def build_driver_cmd(
     budget_tokens: Optional[int] = None,
     build_budget_usd: Any = _BUDGET_UNSET,
 ) -> List[str]:
-    """Dispatch command construction for the active driver (test entry point).
+    """Build argv for the factory agent (always Grok Build).
 
-    ``budget_tokens`` wins when provided. Otherwise, for Grok only,
-    ``build_budget_usd`` (override or settings via :func:`resolve_build_budget_tokens`)
-    is converted to tokens. Claude never receives a budget flag.
+    ``driver`` is accepted for call-site compat but ignored — Claude is no
+    longer a factory path. ``budget_tokens`` wins when provided; otherwise
+    ``build_budget_usd`` may resolve a Grok goal token cap.
     """
+    del driver  # always Grok
     cfg = normalize_settings(settings)
-    if driver == DRIVER_CLAUDE:
-        c = cfg["claude"]
-        return build_claude_cmd(
-            prompt,
-            cwd,
-            session_id=session_id,
-            dangerously_skip=dangerously_skip or bool(c.get("dangerouslySkipPermissions")),
-            permission_mode=permission_mode or c.get("permissionMode") or "bypassPermissions",
-            model=c.get("model") or "",
-            effort=c.get("effort") or "",
-        )
     g = cfg["grok"]
     tokens = budget_tokens
     if tokens is None and build_budget_usd is not _BUDGET_UNSET:
@@ -2575,43 +2463,17 @@ def run_agent(
     apply_build_budget: bool = False,
     build_budget_usd: Any = _BUDGET_UNSET,
 ) -> dict:
-    """Run one agent turn with the currently selected driver.
+    """Run one Grok Build agent turn.
 
-    All plan/build/refine/improve/consolidate jobs should call this so switching
-    drivers in settings cannot leave a job hard-coded to Grok.
+    All plan/build/refine/improve/consolidate jobs call this. Settings are
+    normalized to Grok-only even if a stale Claude blob is passed in.
 
-    When ``apply_build_budget`` is True and the driver is Grok, a dollar budget
-    is resolved (per-build override or ``grok.maxBuildBudgetUsd``) and converted
-    to tokens for ``/goal --budget``. Claude builds ignore budget entirely.
+    When ``apply_build_budget`` is True, a dollar budget is resolved (per-build
+    override or ``grok.maxBuildBudgetUsd``) and converted to tokens for
+    ``/goal --budget``.
     """
     cfg = normalize_settings(settings if settings is not None else load_settings())
-    driver = cfg["driver"]
     emit = on_line or (lambda _s: None)
-    if driver == DRIVER_CLAUDE:
-        c = cfg["claude"]
-        emit(f"Driver: Claude Code ({c.get('model') or 'default'})")
-        if recorder is not None:
-            recorder.update(
-                driver=DRIVER_CLAUDE,
-                driverLabel="Claude Code",
-                model=c.get("model") or "",
-                effort=c.get("effort") or "",
-                permissionMode=permission_mode
-                or c.get("permissionMode")
-                or "bypassPermissions",
-            )
-        return run_claude(
-            prompt,
-            cwd,
-            on_line=emit,
-            session_id=session_id,
-            permission_mode=permission_mode or c.get("permissionMode") or "bypassPermissions",
-            dangerously_skip=dangerously_skip or bool(c.get("dangerouslySkipPermissions")),
-            timeout=timeout,
-            model=c.get("model") or "",
-            effort=c.get("effort") or "",
-            recorder=recorder,
-        )
     g = cfg["grok"]
     emit(f"Driver: Grok Build ({g.get('model') or 'default'})")
     budget_tokens: Optional[int] = None

@@ -42,8 +42,8 @@ export interface State {
   topics: Topic[];
 }
 
-/** Agent driver: headless Grok Build or Claude Code CLI. */
-export type AgentDriver = "grok" | "claude";
+/** Factory agent driver — Grok Build only. */
+export type AgentDriver = "grok";
 
 export interface GrokDriverSettings {
   model: string;
@@ -56,17 +56,10 @@ export interface GrokDriverSettings {
   maxBuildBudgetUsd?: string;
 }
 
-export interface ClaudeDriverSettings {
-  model: string;
-  permissionMode: string;
-  effort: string;
-  dangerouslySkipPermissions: boolean;
-}
-
 export interface FactorySettings {
+  /** Always `"grok"`; server coerces any other value. */
   driver: AgentDriver;
   grok: GrokDriverSettings;
-  claude: ClaudeDriverSettings;
 }
 
 /** One dropdown option from live CLI discovery. */
@@ -90,7 +83,7 @@ export interface DriverCatalog {
   probes?: Record<string, unknown>;
 }
 
-/** Live-discovered option catalogs (TTL-cached on the server). */
+/** Live-discovered Grok option catalog (TTL-cached on the server). */
 export interface SettingsCatalog {
   fetchedAt: number;
   fetchedAtIso: string;
@@ -102,7 +95,6 @@ export interface SettingsCatalog {
   stale?: boolean;
   error?: string | null;
   grok: DriverCatalog;
-  claude: DriverCatalog;
 }
 
 /** Prepaid $ remaining from console.x.ai (Management API). */
@@ -284,7 +276,7 @@ export const api = {
    * Start Approve & build. Optional `budgetUsd`:
    * - omit → server uses global grok.maxBuildBudgetUsd
    * - null → unlimited for this build
-   * - positive number → dollar cap (Grok only; ignored for Claude)
+   * - positive number → dollar cap (converted to Grok goal tokens)
    */
   buildTopic: (id: string, opts?: { budgetUsd?: number | null }) =>
     fetch(`/api/topics/${id}/build`, {
@@ -362,23 +354,19 @@ export const api = {
       json<{ catalog: SettingsCatalog; settings: FactorySettings }>
     ),
 
-  /** Cheap current-model read straight from the CLI config files (no spawn). */
+  /** Cheap current-model read straight from the Grok CLI config file (no spawn). */
   getCurrentModels: () =>
     fetch("/api/settings/current").then(
-      json<{ grok: { currentModel: string }; claude: { currentModel: string } }>
+      json<{ grok: { currentModel: string } }>
     ),
 
   /**
    * Subscribe to live current-model changes via SSE. The backend pushes
-   * whenever ~/.claude/settings.json or ~/.grok/config.toml changes, so a
-   * `/model` switch in the terminal updates the widget with no re-poll.
-   * Returns an unsubscribe fn.
+   * whenever ~/.grok/config.toml changes, so a `/model` switch in the
+   * terminal updates the widget with no re-poll. Returns an unsubscribe fn.
    */
   subscribeCurrentModels: (
-    onChange: (data: {
-      grok: { currentModel: string };
-      claude: { currentModel: string };
-    }) => void
+    onChange: (data: { grok: { currentModel: string } }) => void
   ): (() => void) => {
     const es = new EventSource("/api/settings/current/stream");
     es.onmessage = (ev) => {

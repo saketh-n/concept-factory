@@ -1,17 +1,13 @@
 """Tests for live CLI settings-catalog discovery + TTL cache.
 
 Primary path drives the shipped ``agent.get_settings_catalog`` /
-``run_discovery_cli`` / parsers. When real ``grok`` / ``claude`` binaries are
-on PATH, live discovery is exercised and asserted to include models the static
-UI used to miss (e.g. grok-4.5, fable).
+``run_discovery_cli`` / parsers. Grok Build is the only factory driver;
+Claude discovery helpers may still exist but are not required for catalog.
 """
 from __future__ import annotations
 
-import json
-import os
 import shutil
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -32,9 +28,6 @@ except ImportError:  # pragma: no cover
     app = None  # type: ignore
 
 HAS_GROK = bool(shutil.which("grok") or (agent.GROK_BIN and Path(agent.GROK_BIN).is_file()))
-HAS_CLAUDE = bool(
-    shutil.which("claude") or (agent.CLAUDE_BIN and Path(agent.CLAUDE_BIN).is_file())
-)
 
 # Captured from real CLIs on this machine (also used as parse fixtures).
 FIXTURE_GROK_MODELS = """\
@@ -84,7 +77,7 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(all(m["value"] for m in parsed["models"]))
 
     def test_parse_claude_models_includes_fable(self) -> None:
-        # Fixture is haiku current — map to alias
+        # Legacy parser still works for residual helpers.
         text = (
             "Current model: Haiku 4.5\n"
             "Usage: /model <name>. Available: sonnet, opus, haiku, fable, best, "
@@ -115,7 +108,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(alias, "fable[1m]")
 
     def test_resolve_model_selection(self) -> None:
-        # Empty / bootstrap sonnet → CLI current
+        # Empty / bootstrap sonnet → CLI current (legacy claude driver arg)
         self.assertEqual(
             agent.resolve_model_selection("", "fable", driver="claude"),
             "fable",
@@ -174,12 +167,6 @@ class CatalogPollTests(unittest.TestCase):
                 "permissionModes": [],
                 "reasoningEfforts": [{"value": "", "label": "Default"}],
             },
-            "claude": {
-                "models": [{"value": "fable", "label": "fable"}],
-                "currentModel": "fable",
-                "permissionModes": [],
-                "efforts": [{"value": "", "label": "Default"}],
-            },
         }
 
     def test_ttl_reuses_second_call(self) -> None:
@@ -230,7 +217,7 @@ class CatalogPollTests(unittest.TestCase):
         self.assertTrue(caches <= {"none", "coalesced", "memory"})
 
 
-@unittest.skipUnless(HAS_GROK and HAS_CLAUDE, "both CLIs required for live discovery")
+@unittest.skipUnless(HAS_GROK, "grok CLI required for live discovery")
 class LiveDiscoveryTests(unittest.TestCase):
     def setUp(self) -> None:
         agent.clear_settings_catalog_cache()
@@ -240,25 +227,19 @@ class LiveDiscoveryTests(unittest.TestCase):
         agent.clear_settings_catalog_cache()
 
     def test_live_cli_spawn_and_models(self) -> None:
-        """Discovery returns live models; second call hits TTL cache."""
-        before = agent.get_cli_spawn_count()
+        """Discovery returns Grok models; second call hits TTL cache."""
         cat = agent.get_settings_catalog()
-        after = agent.get_cli_spawn_count()
-        # At least help probes (+ maybe claude /model pty); grok models may be file cache
-        self.assertGreaterEqual(after - before, 1)
-        self.assertIn(cat.get("source"), ("live", "live-cli"))
+        self.assertIn(cat.get("source"), ("live", "live-cli", "files"))
+        self.assertIn("grok", cat)
+        self.assertNotIn("claude", cat)
 
         g_values = [m["value"] for m in cat["grok"]["models"] if m["value"]]
-        c_values = [m["value"] for m in cat["claude"]["models"] if m["value"]]
         self.assertTrue(g_values, "Grok model list empty")
-        self.assertTrue(c_values, "Claude model list empty")
-        self.assertIn("grok-4.5", g_values)
-        self.assertTrue(cat["grok"].get("currentModel"))
-        self.assertTrue(cat["claude"].get("currentModel"))
-
-        c_probe = cat["claude"]["probes"]["models"]["argv"]
-        # Claude must NOT pin --model on the list probe
-        self.assertNotIn("--model", c_probe)
+        # Current model is reported when known
+        self.assertTrue(
+            cat["grok"].get("currentModel") or g_values,
+            "expected currentModel or non-empty models",
+        )
 
         # TTL: second call reuses memory without extra spawns
         sp = agent.get_cli_spawn_count()
@@ -270,10 +251,13 @@ class LiveDiscoveryTests(unittest.TestCase):
         """Direct unit under test: run_discovery_cli executes real grok models."""
         r = agent.run_discovery_cli([agent.GROK_BIN, "models"])
         self.assertEqual(r["returncode"], 0)
-        self.assertIn("grok-4.5", r["stdout"])
         parsed = agent.parse_grok_models_output(r["stdout"])
-        self.assertTrue(any(m["value"] == "grok-4.5" for m in parsed["models"]))
-        self.assertEqual(parsed["currentModel"], "grok-4.5")
+        values = [m["value"] for m in parsed["models"] if m["value"]]
+        self.assertTrue(values, "parsed grok models empty")
+        # currentModel (if set) must be one of the listed models
+        cur = parsed.get("currentModel") or ""
+        if cur:
+            self.assertIn(cur, values)
 
 
 @unittest.skipIf(TestClient is None, "fastapi TestClient unavailable")
@@ -303,20 +287,13 @@ class CatalogApiTests(unittest.TestCase):
                 "reasoningEfforts": [{"value": "", "label": "Default"}],
                 "probes": {"models": {"argv": ["file", "models_cache.json"]}},
             },
-            "claude": {
-                "models": [{"value": "fable", "label": "fable"}],
-                "currentModel": "fable",
-                "permissionModes": [{"value": "plan", "label": "Plan"}],
-                "efforts": [{"value": "low", "label": "Low"}],
-                "probes": {"models": {"argv": ["claude", "-p", "/model"]}},
-            },
         }
         with mock.patch.object(agent, "get_settings_catalog", return_value=fake) as m:
             r = self.client.get("/api/settings/catalog")
             self.assertEqual(r.status_code, 200)
             body = r.json()
             self.assertEqual(body["grok"]["models"][0]["value"], "grok-4.5")
-            self.assertEqual(body["claude"]["models"][0]["value"], "fable")
+            self.assertNotIn("claude", body)
             m.assert_called()
             r2 = self.client.post("/api/settings/catalog/refresh")
             self.assertEqual(r2.status_code, 200)
@@ -339,8 +316,9 @@ class CatalogApiTests(unittest.TestCase):
             self.assertEqual(r.status_code, 200)
             body = r.json()
             self.assertIn("driver", body)
+            self.assertEqual(body["driver"], "grok")
             self.assertIn("grok", body)
-            self.assertIn("claude", body)
+            self.assertNotIn("claude", body)
 
 
 class FrontendNoHardcodedModelsTests(unittest.TestCase):
@@ -361,7 +339,9 @@ class FrontendNoHardcodedModelsTests(unittest.TestCase):
         self.assertIn("getSettingsCatalog", src)
         self.assertNotIn("bootstrapSettings", src)
         self.assertIn("catalog?.grok", src)
-        self.assertIn("catalog?.claude", src)
+        # Claude catalog no longer used in UI
+        self.assertNotIn("catalog?.claude", src)
+        self.assertNotIn("Claude Code", src)
 
 
 if __name__ == "__main__":

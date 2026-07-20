@@ -2,11 +2,12 @@
 
 Exercises the shipped ``agent`` module (settings persistence, argv builders,
 ``run_agent`` routing) and FastAPI ``/api/settings`` via TestClient.
+
+Grok Build is the only factory driver; Claude Code is deprecated.
 """
 from __future__ import annotations
 
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -42,38 +43,69 @@ class SettingsPersistenceTests(unittest.TestCase):
         s = agent.load_settings()
         self.assertEqual(s["driver"], "grok")
         self.assertIn("model", s["grok"])
-        self.assertIn("model", s["claude"])
+        self.assertNotIn("claude", s)
         self.assertIn("maxBuildBudgetUsd", s["grok"])
         self.assertEqual(s["grok"]["maxBuildBudgetUsd"], "")
 
     def test_save_and_reload_roundtrip(self) -> None:
         saved = agent.save_settings(
             {
-                "driver": "claude",
-                "claude": {
-                    "model": "haiku",
-                    "effort": "low",
-                    "dangerouslySkipPermissions": True,
-                },
+                "driver": "grok",
                 "grok": {"model": "grok-3-mini", "reasoningEffort": "high"},
             }
         )
-        self.assertEqual(saved["driver"], "claude")
-        self.assertEqual(saved["claude"]["model"], "haiku")
-        self.assertEqual(saved["claude"]["effort"], "low")
+        self.assertEqual(saved["driver"], "grok")
         self.assertEqual(saved["grok"]["model"], "grok-3-mini")
+        self.assertNotIn("claude", saved)
 
         reloaded = agent.load_settings()
-        self.assertEqual(reloaded["driver"], "claude")
-        self.assertEqual(reloaded["claude"]["model"], "haiku")
+        self.assertEqual(reloaded["driver"], "grok")
         self.assertEqual(reloaded["grok"]["model"], "grok-3-mini")
         self.assertTrue(self.settings_path.is_file())
         disk = json.loads(self.settings_path.read_text())
-        self.assertEqual(disk["driver"], "claude")
+        self.assertEqual(disk["driver"], "grok")
+        self.assertNotIn("claude", disk)
+
+    def test_stale_claude_driver_coerces_to_grok(self) -> None:
+        """Any residual Claude driver/alias becomes grok; claude section dropped."""
+        for raw_driver in (
+            "claude",
+            "Claude Code",
+            "claude code",
+            "anthropic",
+            "CLAUDE",
+        ):
+            s = agent.normalize_settings(
+                {
+                    "driver": raw_driver,
+                    "claude": {"model": "haiku", "effort": "low"},
+                    "grok": {"model": "grok-4.5"},
+                }
+            )
+            self.assertEqual(s["driver"], "grok", msg=repr(raw_driver))
+            self.assertNotIn("claude", s)
+            self.assertEqual(s["grok"]["model"], "grok-4.5")
+
+        # Persist coerce on save/load
+        saved = agent.save_settings(
+            {
+                "driver": "claude",
+                "claude": {"model": "sonnet"},
+                "grok": {"model": "grok-3-mini"},
+            }
+        )
+        self.assertEqual(saved["driver"], "grok")
+        self.assertNotIn("claude", saved)
+        reloaded = agent.load_settings()
+        self.assertEqual(reloaded["driver"], "grok")
+        self.assertNotIn("claude", reloaded)
+        disk = json.loads(self.settings_path.read_text())
+        self.assertEqual(disk["driver"], "grok")
+        self.assertNotIn("claude", disk)
 
     def test_alias_normalization(self) -> None:
         s = agent.normalize_settings({"driver": "claude code"})
-        self.assertEqual(s["driver"], "claude")
+        self.assertEqual(s["driver"], "grok")
         s2 = agent.normalize_settings({"driver": "Grok Build"})
         self.assertEqual(s2["driver"], "grok")
 
@@ -195,6 +227,34 @@ class DriverDispatchTests(unittest.TestCase):
         self.assertNotIn("--budget", cmd[p_idx + 1])
         self.assertFalse(cmd[p_idx + 1].startswith("/goal"))
 
+    def test_claude_looking_settings_still_build_grok_argv(self) -> None:
+        """Residual claude driver blobs must not produce Claude bin argv."""
+        cwd = Path("/tmp/fake-topic")
+        cmd = agent.build_driver_cmd(
+            "claude",
+            "build this",
+            cwd,
+            settings={
+                "driver": "claude",
+                "claude": {
+                    "model": "haiku",
+                    "permissionMode": "acceptEdits",
+                    "effort": "medium",
+                    "dangerouslySkipPermissions": True,
+                },
+                "grok": {"model": "grok-4.5", "permissionMode": "bypassPermissions"},
+            },
+            dangerously_skip=True,
+        )
+        self.assertEqual(cmd[0], agent.GROK_BIN)
+        self.assertNotEqual(cmd[0], agent.CLAUDE_BIN)
+        self.assertIn("streaming-json", cmd)
+        self.assertNotIn("stream-json", cmd)
+        self.assertIn("--always-approve", cmd)
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
+        self.assertIn("grok-4.5", cmd)
+        self.assertNotIn("haiku", cmd)
+
     def test_grok_build_cmd_includes_budget_from_dollars(self) -> None:
         """Drive real build_grok_cmd / build_driver_cmd with a dollar budget."""
         cwd = Path("/tmp/fake-topic")
@@ -267,52 +327,6 @@ class DriverDispatchTests(unittest.TestCase):
         prompt2 = cmd2[cmd2.index("-p") + 1]
         self.assertNotIn("--budget", prompt2)
 
-    def test_claude_cmd_never_gets_budget(self) -> None:
-        cwd = Path("/tmp/fake-topic")
-        cmd = agent.build_driver_cmd(
-            "claude",
-            "build this",
-            cwd,
-            settings={
-                "driver": "claude",
-                "claude": {"model": "haiku", "dangerouslySkipPermissions": True},
-            },
-            build_budget_usd=5,
-            budget_tokens=999_999,
-        )
-        joined = " ".join(cmd)
-        self.assertNotIn("--budget", joined)
-        self.assertNotIn("/goal", joined)
-
-    def test_claude_cmd_includes_model_and_stream_json(self) -> None:
-        cwd = Path("/tmp/fake-topic")
-        cmd = agent.build_driver_cmd(
-            "claude",
-            "build this",
-            cwd,
-            settings={
-                "driver": "claude",
-                "claude": {
-                    "model": "haiku",
-                    "permissionMode": "acceptEdits",
-                    "effort": "medium",
-                    "dangerouslySkipPermissions": True,
-                },
-            },
-            dangerously_skip=True,
-        )
-        self.assertEqual(cmd[0], agent.CLAUDE_BIN)
-        self.assertIn("-p", cmd)
-        self.assertIn("build this", cmd)
-        self.assertIn("--output-format", cmd)
-        self.assertIn("stream-json", cmd)
-        self.assertIn("--verbose", cmd)
-        self.assertIn("--model", cmd)
-        self.assertIn("haiku", cmd)
-        self.assertIn("--effort", cmd)
-        self.assertIn("medium", cmd)
-        self.assertIn("--dangerously-skip-permissions", cmd)
-
     def test_run_agent_routes_to_grok(self) -> None:
         lines: list = []
         with mock.patch.object(agent, "run_grok", return_value={"sessionId": "g1", "error": None}) as rg, \
@@ -364,10 +378,12 @@ class DriverDispatchTests(unittest.TestCase):
         self.assertIsNone(rg.call_args.kwargs["budget_tokens"])
         self.assertTrue(any("unlimited" in ln.lower() for ln in lines))
 
-    def test_run_agent_routes_to_claude(self) -> None:
+    def test_run_agent_ignores_stale_claude_settings(self) -> None:
+        """Stale driver:claude must still call run_grok, never run_claude."""
         lines: list = []
-        with mock.patch.object(agent, "run_claude", return_value={"sessionId": "c1", "error": None}) as rc, \
-             mock.patch.object(agent, "run_grok") as rg:
+        with mock.patch.object(
+            agent, "run_grok", return_value={"sessionId": "g1", "error": None}
+        ) as rg, mock.patch.object(agent, "run_claude") as rc:
             result = agent.run_agent(
                 "hi",
                 Path("."),
@@ -378,12 +394,16 @@ class DriverDispatchTests(unittest.TestCase):
                         "model": "sonnet",
                         "dangerouslySkipPermissions": True,
                     },
+                    "grok": {"model": "grok-4.5"},
                 },
             )
-        self.assertEqual(result["sessionId"], "c1")
-        rc.assert_called_once()
-        rg.assert_not_called()
-        self.assertTrue(any("Claude Code" in ln for ln in lines))
+        self.assertEqual(result["sessionId"], "g1")
+        rg.assert_called_once()
+        rc.assert_not_called()
+        self.assertTrue(any("Grok Build" in ln for ln in lines))
+        self.assertFalse(any("Claude Code" in ln for ln in lines))
+        # Grok model from settings is what was passed through
+        self.assertEqual(rg.call_args.kwargs.get("model") or rg.call_args[1].get("model"), "grok-4.5")
 
     def test_jobs_use_run_agent_not_run_grok(self) -> None:
         """Static check: main.py agent jobs call run_agent, not run_grok."""
@@ -420,25 +440,27 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["driver"], "grok")
+        self.assertNotIn("claude", body)
 
+        # Attempting to select Claude is coerced to Grok-only settings.
         r2 = self.client.put(
             "/api/settings",
             json={
                 "driver": "claude",
                 "claude": {"model": "haiku", "effort": "low"},
+                "grok": {"model": "grok-3-mini"},
             },
         )
         self.assertEqual(r2.status_code, 200)
         saved = r2.json()
-        self.assertEqual(saved["driver"], "claude")
-        self.assertEqual(saved["claude"]["model"], "haiku")
-        self.assertEqual(saved["claude"]["effort"], "low")
+        self.assertEqual(saved["driver"], "grok")
+        self.assertNotIn("claude", saved)
+        self.assertEqual(saved["grok"]["model"], "grok-3-mini")
 
         r3 = self.client.get("/api/settings")
-        self.assertEqual(r3.json()["driver"], "claude")
-        self.assertEqual(r3.json()["claude"]["model"], "haiku")
+        self.assertEqual(r3.json()["driver"], "grok")
+        self.assertNotIn("claude", r3.json())
 
-        # Switch back to grok with a distinct model.
         r4 = self.client.put(
             "/api/settings",
             json={
@@ -484,9 +506,9 @@ class SettingsApiTests(unittest.TestCase):
 
 
 class StreamCoalescerTests(unittest.TestCase):
-    def test_claude_assistant_text_emits_lines(self) -> None:
+    def test_assistant_text_emits_lines(self) -> None:
         lines: list = []
-        c = agent._StreamCoalescer(lines.append, driver_label="Claude")
+        c = agent._StreamCoalescer(lines.append, driver_label="Grok")
         c.push(
             {
                 "type": "assistant",
@@ -509,7 +531,7 @@ class BudgetUxStaticTests(unittest.TestCase):
         src = (self.ROOT / "frontend/src/components/PlanModal.tsx").read_text()
         self.assertIn("Approve & build", src)
         self.assertIn("budgetUsd", src)
-        self.assertIn("showGrokBudget", src)
+        self.assertNotIn("showGrokBudget", src)
         # Budget control sits in the same footer as the build action.
         footer_idx = src.rfind("Approve & build")
         # Label copy next to the $ input (not the earlier code comment).
@@ -530,6 +552,37 @@ class BudgetUxStaticTests(unittest.TestCase):
         self.assertIn("apply_build_budget=True", src)
         self.assertIn("build_budget_usd", src)
         self.assertIn("budgetUsd", src)
+
+
+class DeprecateClaudeUxStaticTests(unittest.TestCase):
+    """Settings UI is Grok-only; types no longer advertise Claude as selectable."""
+
+    ROOT = BACKEND.parent
+
+    def test_settings_modal_no_claude_driver_toggle(self) -> None:
+        src = (self.ROOT / "frontend/src/components/SettingsModal.tsx").read_text()
+        self.assertIn("Grok Build", src)
+        self.assertIn("Grok Build options", src)
+        self.assertNotIn("Claude Code", src)
+        self.assertNotIn('setDriver("claude")', src)
+        self.assertNotIn("patchClaude", src)
+        self.assertNotIn("Claude Code options", src)
+        self.assertNotIn("dangerouslySkipPermissions", src)
+
+    def test_api_types_grok_only_driver(self) -> None:
+        src = (self.ROOT / "frontend/src/api.ts").read_text()
+        self.assertIn('export type AgentDriver = "grok"', src)
+        self.assertNotIn('"claude"', src.split("export type AgentDriver")[1].split(";")[0])
+        self.assertNotIn("ClaudeDriverSettings", src)
+        # FactorySettings should not require a claude section
+        fs = src[src.find("export interface FactorySettings") : src.find("export interface FactorySettings") + 400]
+        self.assertIn("grok:", fs)
+        self.assertNotIn("claude:", fs)
+
+    def test_plan_modal_no_claude_branch(self) -> None:
+        src = (self.ROOT / "frontend/src/components/PlanModal.tsx").read_text()
+        self.assertNotIn('driver === "claude"', src)
+        self.assertNotIn('setDriver', src)
 
 
 if __name__ == "__main__":

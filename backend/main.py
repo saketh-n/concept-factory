@@ -340,20 +340,21 @@ def update_meta_prompt(payload: MetaPromptUpdate) -> State:
     return state
 
 
-# --- Agent driver settings (Grok Build vs Claude Code) ----------------------
+# --- Agent driver settings (Grok Build only) --------------------------------
 class DriverSettingsUpdate(BaseModel):
     """Partial or full settings blob from the dashboard modal."""
-    driver: Optional[str] = None
+    driver: Optional[str] = None  # ignored; always coerced to grok
     grok: Optional[dict] = None
+    # Accepted but ignored for backward-compat with older clients.
     claude: Optional[dict] = None
 
 
 @app.get("/api/settings")
 def get_settings(syncCli: bool = False) -> dict:
-    """Global agent driver + per-driver model/options (persisted).
+    """Global Grok Build options (persisted).
 
     By default returns stored settings only (fast — form can paint immediately).
-    Pass ``syncCli=1`` to also merge live CLI current models from the catalog
+    Pass ``syncCli=1`` to also merge live Grok CLI current model from the catalog
     (uses the TTL cache when warm).
     """
     stored = agent.load_settings()
@@ -365,15 +366,15 @@ def get_settings(syncCli: bool = False) -> dict:
 
 @app.get("/api/settings/current")
 def get_current_models() -> dict:
-    """Cheap current-model read straight from the CLI config files (no spawn)."""
+    """Cheap current-model read straight from the Grok CLI config file (no spawn)."""
     return agent.read_current_models()
 
 
 @app.get("/api/settings/current/stream")
 async def stream_current_models(request: Request) -> StreamingResponse:
-    """Server-Sent Events: push the current model whenever the CLIs' config
-    files change on disk, so a `/model` switch in the terminal updates the
-    open widget in real time without polling or a manual refresh."""
+    """Server-Sent Events: push the current Grok model whenever config.toml
+    changes on disk, so a `/model` switch in the terminal updates the open
+    widget in real time without polling or a manual refresh."""
 
     async def gen():
         last_sig = None
@@ -401,19 +402,16 @@ async def stream_current_models(request: Request) -> StreamingResponse:
 
 @app.put("/api/settings")
 def put_settings(payload: DriverSettingsUpdate) -> dict:
-    """Persist driver choice and model/options; jobs pick this up on next run.
+    """Persist Grok options; jobs pick this up on next run.
 
-    Also compiles the selection back into CLI state (``~/.claude/settings.json``
-    model / ``~/.grok/config.toml`` default) so the interactive CLIs agree with
-    the widget. Disable with CF_SETTINGS_SYNC_CLI=0.
+    Also compiles the selection into ``~/.grok/config.toml`` default so the
+    interactive Grok CLI agrees with the widget. Disable with CF_SETTINGS_SYNC_CLI=0.
     """
     current = agent.load_settings()
     patch = payload.model_dump(exclude_none=True)
-    if "driver" in patch:
-        current["driver"] = patch["driver"]
-    for key in ("grok", "claude"):
-        if key in patch and isinstance(patch[key], dict):
-            current.setdefault(key, {}).update(patch[key])
+    # driver / claude patches are ignored — normalize_settings forces Grok-only.
+    if "grok" in patch and isinstance(patch["grok"], dict):
+        current.setdefault("grok", {}).update(patch["grok"])
     saved = agent.save_settings(current)
     saved["cliSync"] = agent.sync_settings_to_cli(saved)
     return saved
@@ -421,11 +419,7 @@ def put_settings(payload: DriverSettingsUpdate) -> dict:
 
 @app.get("/api/settings/catalog")
 def get_settings_catalog(force: bool = False) -> dict:
-    """Live-discovered dropdown options (TTL-cached; ``force=1`` re-polls).
-
-    Models/enums from CLI config files + headless probes, including
-    ``currentModel`` per driver.
-    """
+    """Live-discovered Grok dropdown options (TTL-cached; ``force=1`` re-polls)."""
     return agent.get_settings_catalog(force=force)
 
 
