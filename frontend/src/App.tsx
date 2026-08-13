@@ -8,7 +8,7 @@ import PlanModal from "./components/PlanModal";
 import SettingsModal from "./components/SettingsModal";
 import Workbench, { isPlanMode } from "./components/Workbench";
 import CreditsHud from "./components/CreditsHud";
-import RunsDashboard from "./components/RunsDashboard";
+import RunsDashboard from "./components/runs/RunsDashboard";
 import {
   IconChart,
   IconMap,
