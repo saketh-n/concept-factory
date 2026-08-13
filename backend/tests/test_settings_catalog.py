@@ -124,7 +124,7 @@ class CatalogPollTests(unittest.TestCase):
             calls["n"] += 1
             return self._fake_discover()
 
-        with mock.patch.object(agent, "discover_settings_catalog", side_effect=fake):
+        with mock.patch.object(agent.catalog, "discover_settings_catalog", side_effect=fake):
             a = agent.get_settings_catalog()
             self.assertEqual(calls["n"], 1)
             self.assertEqual(a.get("cache"), "none")
@@ -151,7 +151,7 @@ class CatalogPollTests(unittest.TestCase):
             barrier.wait()
             results.append(agent.get_settings_catalog())
 
-        with mock.patch.object(agent, "discover_settings_catalog", side_effect=fake):
+        with mock.patch.object(agent.catalog, "discover_settings_catalog", side_effect=fake):
             t1 = threading.Thread(target=worker)
             t2 = threading.Thread(target=worker)
             t1.start()

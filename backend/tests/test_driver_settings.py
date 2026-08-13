@@ -26,11 +26,11 @@ class SettingsPersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.settings_path = Path(self._tmp.name) / "settings.json"
-        self._orig = agent.SETTINGS_FILE
-        agent.SETTINGS_FILE = self.settings_path
+        self._orig = agent.settings.SETTINGS_FILE
+        agent.settings.SETTINGS_FILE = self.settings_path
 
     def tearDown(self) -> None:
-        agent.SETTINGS_FILE = self._orig
+        agent.settings.SETTINGS_FILE = self._orig
         self._tmp.cleanup()
 
     def test_default_is_grok(self) -> None:
@@ -322,7 +322,7 @@ class DriverDispatchTests(unittest.TestCase):
 
     def test_run_agent_routes_to_grok(self) -> None:
         lines: list = []
-        with mock.patch.object(agent, "run_grok", return_value={"sessionId": "g1", "error": None}) as rg:
+        with mock.patch.object(agent.driver, "run_grok", return_value={"sessionId": "g1", "error": None}) as rg:
             result = agent.run_agent(
                 "hi",
                 Path("."),
@@ -341,7 +341,7 @@ class DriverDispatchTests(unittest.TestCase):
         }
         expected = agent.dollars_to_budget_tokens(1)
         with mock.patch.object(
-            agent, "run_grok", return_value={"sessionId": "g1", "error": None}
+            agent.driver, "run_grok", return_value={"sessionId": "g1", "error": None}
         ) as rg:
             agent.run_agent(
                 "build it",
@@ -356,7 +356,7 @@ class DriverDispatchTests(unittest.TestCase):
         # Explicit unlimited override
         lines.clear()
         with mock.patch.object(
-            agent, "run_grok", return_value={"sessionId": "g1", "error": None}
+            agent.driver, "run_grok", return_value={"sessionId": "g1", "error": None}
         ) as rg:
             agent.run_agent(
                 "build it",
@@ -373,7 +373,7 @@ class DriverDispatchTests(unittest.TestCase):
         """Stale driver:claude must still route to run_grok."""
         lines: list = []
         with mock.patch.object(
-            agent, "run_grok", return_value={"sessionId": "g1", "error": None}
+            agent.driver, "run_grok", return_value={"sessionId": "g1", "error": None}
         ) as rg:
             result = agent.run_agent(
                 "hi",
@@ -414,14 +414,14 @@ class SettingsApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.settings_path = Path(self._tmp.name) / "settings.json"
-        self._orig = agent.SETTINGS_FILE
-        agent.SETTINGS_FILE = self.settings_path
+        self._orig = agent.settings.SETTINGS_FILE
+        agent.settings.SETTINGS_FILE = self.settings_path
         # Reset to defaults for a clean API surface.
         agent.save_settings(agent.default_settings())
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
-        agent.SETTINGS_FILE = self._orig
+        agent.settings.SETTINGS_FILE = self._orig
         self._tmp.cleanup()
 
     def test_get_put_settings_roundtrip(self) -> None:
@@ -497,7 +497,7 @@ class SettingsApiTests(unittest.TestCase):
 class StreamCoalescerTests(unittest.TestCase):
     def test_assistant_text_emits_lines(self) -> None:
         lines: list = []
-        c = agent._StreamCoalescer(lines.append, driver_label="Grok")
+        c = agent.driver._StreamCoalescer(lines.append, driver_label="Grok")
         c.push(
             {
                 "type": "assistant",

@@ -37,28 +37,28 @@ class GrokWriteBackTests(unittest.TestCase):
             (p / "config.toml").write_text(
                 '[api]\nkey = "abc"\n\n[models]\ndefault = "grok-4.5"\nfast = "grok-3-mini"\n'
             )
-            res = agent._write_grok_cli_model("grok-3-mini")
+            res = agent.catalog._write_grok_cli_model("grok-3-mini")
             self.assertTrue(res["ok"] and res["changed"], res)
             text = (p / "config.toml").read_text()
             self.assertIn('default = "grok-3-mini"', text)
             self.assertIn('key = "abc"', text)
             self.assertIn('fast = "grok-3-mini"', text)
-            self.assertEqual(agent._read_grok_config_default(), "grok-3-mini")
+            self.assertEqual(agent.catalog._read_grok_config_default(), "grok-3-mini")
 
     def test_appends_models_section_when_missing(self) -> None:
         with FakeHome() as home:
             p = home / ".grok"
             p.mkdir()
             (p / "config.toml").write_text('[api]\nkey = "abc"\n')
-            res = agent._write_grok_cli_model("grok-4.5")
+            res = agent.catalog._write_grok_cli_model("grok-4.5")
             self.assertTrue(res["ok"], res)
-            self.assertEqual(agent._read_grok_config_default(), "grok-4.5")
+            self.assertEqual(agent.catalog._read_grok_config_default(), "grok-4.5")
 
     def test_creates_config_when_absent(self) -> None:
         with FakeHome():
-            res = agent._write_grok_cli_model("grok-4.5")
+            res = agent.catalog._write_grok_cli_model("grok-4.5")
             self.assertTrue(res["ok"], res)
-            self.assertEqual(agent._read_grok_config_default(), "grok-4.5")
+            self.assertEqual(agent.catalog._read_grok_config_default(), "grok-4.5")
 
 
 class SyncSettingsTests(unittest.TestCase):
@@ -72,7 +72,7 @@ class SyncSettingsTests(unittest.TestCase):
         with FakeHome(), mock.patch.dict(os.environ, {"CF_SETTINGS_SYNC_CLI": "1"}):
             agent.clear_settings_catalog_cache()
             # Seed a warm Grok-only cache to verify in-place current update.
-            agent._catalog_cache = {
+            agent.catalog._catalog_cache = {
                 "grok": {
                     "currentModel": "grok-4.5",
                     "defaultModel": "grok-4.5",
@@ -86,7 +86,7 @@ class SyncSettingsTests(unittest.TestCase):
                     ],
                 },
             }
-            agent._catalog_cache_fetched_at = time.time()
+            agent.catalog._catalog_cache_fetched_at = time.time()
             out = agent.sync_settings_to_cli(
                 {
                     "driver": "claude",  # coerced away
@@ -165,11 +165,11 @@ class StaleWhileRevalidateTests(unittest.TestCase):
             calls["n"] += 1
             return {"fetchedAt": time.time(), "grok": {}}
 
-        with mock.patch.object(agent, "discover_settings_catalog", side_effect=fake):
+        with mock.patch.object(agent.catalog, "discover_settings_catalog", side_effect=fake):
             agent.get_settings_catalog()  # prime
             self.assertEqual(calls["n"], 1)
             # Expire the cache.
-            agent._catalog_cache_fetched_at = time.time() - agent.CATALOG_TTL_SECONDS - 1
+            agent.catalog._catalog_cache_fetched_at = time.time() - agent.CATALOG_TTL_SECONDS - 1
             out = agent.get_settings_catalog()
             self.assertEqual(out["cache"], "memory-stale-revalidating")
             # Background refresh lands shortly.
@@ -197,7 +197,7 @@ class HelpCacheAndFileFirstTests(unittest.TestCase):
             fake_bin.write_text("#!/bin/sh\necho 'usage: fakecli [possible values: a, b]'\n")
             fake_bin.chmod(0o755)
             cache_file = Path(td) / "help_cache.json"
-            with mock.patch.object(agent, "_HELP_CACHE_FILE", cache_file):
+            with mock.patch.object(agent.catalog, "_HELP_CACHE_FILE", cache_file):
                 r1 = agent.get_cli_help(str(fake_bin))
                 self.assertFalse(r1["cached"])
                 self.assertIn("possible values", r1["stdout"])
@@ -220,7 +220,7 @@ class HelpCacheAndFileFirstTests(unittest.TestCase):
     def test_discover_settings_catalog_is_grok_only(self) -> None:
         """Shipped catalog path discovers Grok options and nothing else."""
         with mock.patch.object(
-            agent,
+            agent.catalog,
             "discover_grok_options",
             return_value={"models": [], "currentModel": "grok-4.5"},
         ) as dg:
