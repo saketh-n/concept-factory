@@ -51,11 +51,11 @@ def seed() -> None:
             title=title,
             source=runs.SOURCE_APP,  # intentional UI fixtures, not pollution
         )
-        driver = "claude" if i % 3 else "grok"
+        driver = "grok"
         rec.update(
             driver=driver,
-            driverLabel="Claude Code" if driver == "claude" else "Grok Build",
-            model="claude-fable-5" if driver == "claude" else "grok-4.5",
+            driverLabel="Grok Build",
+            model="grok-4.5",
             permissionMode="bypassPermissions",
         )
         n_tools = random.randint(4, 60 if kind in ("build", "improve") else 14)

@@ -241,7 +241,6 @@ class DriverDispatchTests(unittest.TestCase):
             dangerously_skip=True,
         )
         self.assertEqual(cmd[0], agent.GROK_BIN)
-        self.assertNotEqual(cmd[0], agent.CLAUDE_BIN)
         self.assertIn("streaming-json", cmd)
         self.assertNotIn("stream-json", cmd)
         self.assertIn("--always-approve", cmd)
@@ -323,8 +322,7 @@ class DriverDispatchTests(unittest.TestCase):
 
     def test_run_agent_routes_to_grok(self) -> None:
         lines: list = []
-        with mock.patch.object(agent, "run_grok", return_value={"sessionId": "g1", "error": None}) as rg, \
-             mock.patch.object(agent, "run_claude") as rc:
+        with mock.patch.object(agent, "run_grok", return_value={"sessionId": "g1", "error": None}) as rg:
             result = agent.run_agent(
                 "hi",
                 Path("."),
@@ -333,7 +331,6 @@ class DriverDispatchTests(unittest.TestCase):
             )
         self.assertEqual(result["sessionId"], "g1")
         rg.assert_called_once()
-        rc.assert_not_called()
         self.assertTrue(any("Grok Build" in ln for ln in lines))
 
     def test_run_agent_build_budget_passed_to_grok(self) -> None:
@@ -373,11 +370,11 @@ class DriverDispatchTests(unittest.TestCase):
         self.assertTrue(any("unlimited" in ln.lower() for ln in lines))
 
     def test_run_agent_ignores_stale_claude_settings(self) -> None:
-        """Stale driver:claude must still call run_grok, never run_claude."""
+        """Stale driver:claude must still route to run_grok."""
         lines: list = []
         with mock.patch.object(
             agent, "run_grok", return_value={"sessionId": "g1", "error": None}
-        ) as rg, mock.patch.object(agent, "run_claude") as rc:
+        ) as rg:
             result = agent.run_agent(
                 "hi",
                 Path("."),
@@ -393,7 +390,6 @@ class DriverDispatchTests(unittest.TestCase):
             )
         self.assertEqual(result["sessionId"], "g1")
         rg.assert_called_once()
-        rc.assert_not_called()
         self.assertTrue(any("Grok Build" in ln for ln in lines))
         self.assertFalse(any("Claude Code" in ln for ln in lines))
         # Grok model from settings is what was passed through

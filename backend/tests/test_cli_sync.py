@@ -29,31 +29,6 @@ class FakeHome:
         self._tmp.cleanup()
 
 
-class ClaudeWriteBackTests(unittest.TestCase):
-    """``_write_claude_cli_model`` is a deprecated no-op (factory is Grok-only)."""
-
-    def test_is_noop_skipped(self) -> None:
-        with FakeHome() as home:
-            res = agent._write_claude_cli_model("haiku")
-            self.assertTrue(res["ok"], res)
-            self.assertFalse(res["changed"])
-            self.assertEqual(res.get("skipped"), "claude-deprecated")
-            self.assertFalse((home / ".claude" / "settings.json").exists())
-
-    def test_does_not_touch_existing_claude_settings(self) -> None:
-        with FakeHome() as home:
-            p = home / ".claude"
-            p.mkdir()
-            original = json.dumps(
-                {"model": "fable", "theme": "dark", "permissions": {"allow": ["Bash"]}}
-            )
-            (p / "settings.json").write_text(original)
-            res = agent._write_claude_cli_model("haiku")
-            self.assertTrue(res["ok"])
-            self.assertFalse(res["changed"])
-            self.assertEqual((p / "settings.json").read_text(), original)
-
-
 class GrokWriteBackTests(unittest.TestCase):
     def test_replaces_default_in_models_section(self) -> None:
         with FakeHome() as home:
@@ -151,32 +126,6 @@ class SyncSettingsTests(unittest.TestCase):
             self.assertEqual(grok_actions, [])
             self.assertFalse((home / ".grok" / "config.toml").exists())
 
-    def test_override_detection_returns_empty(self) -> None:
-        """Legacy helper always empty now that Claude is not a factory driver."""
-        self.assertEqual(agent.detect_claude_model_overrides("sonnet"), [])
-
-
-class ModelListCacheTests(unittest.TestCase):
-    """Legacy Claude model-list cache helpers still work if called directly."""
-
-    def test_deep_list_persists_and_shallow_reuses(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            cache = Path(td) / "model_list.json"
-            fake_bin = Path(td) / "claude"
-            fake_bin.write_text("#!/bin/sh\necho hi\n")
-            fake_bin.chmod(0o755)
-            with mock.patch.object(agent, "_MODEL_LIST_CACHE_FILE", cache), \
-                 mock.patch.object(agent, "CLAUDE_BIN", str(fake_bin)):
-                agent.save_claude_model_list(["sonnet", "opus", "haiku", "fable"])
-                got = agent.cached_claude_models()
-                self.assertIn("haiku", got)
-                self.assertEqual(set(got), {"sonnet", "opus", "haiku", "fable"})
-                # Binary change invalidates the cache.
-                fake_bin.write_text("#!/bin/sh\necho v2\n")
-                fake_bin.chmod(0o755)
-                self.assertEqual(agent.cached_claude_models(), [])
-
-
 class CurrentModelReadTests(unittest.TestCase):
     """Cheap file-only current read + change signature (Grok only)."""
 
@@ -268,40 +217,15 @@ class HelpCacheAndFileFirstTests(unittest.TestCase):
                 r4 = agent.get_cli_help(str(fake_bin), refresh=True)
                 self.assertFalse(r4["cached"])
 
-    def test_shallow_claude_discovery_spawns_nothing_when_help_cached(self) -> None:
-        """Inert helper still works file-first if invoked directly."""
-        with FakeHome() as home, tempfile.TemporaryDirectory() as td:
-            (home / ".claude").mkdir()
-            (home / ".claude" / "settings.json").write_text(json.dumps({"model": "haiku"}))
-            fake_bin = Path(td) / "claude"
-            fake_bin.write_text(
-                "#!/bin/sh\necho \"use 'fable', 'haiku', or 'sonnet' "
-                "--permission-mode <mode> [possible values: plan, acceptEdits]\"\n"
-            )
-            fake_bin.chmod(0o755)
-            cache_file = Path(td) / "help_cache.json"
-            with mock.patch.object(agent, "_HELP_CACHE_FILE", cache_file), \
-                 mock.patch.object(agent, "CLAUDE_BIN", str(fake_bin)):
-                agent.discover_claude_options(deep=False)  # warms help cache
-                agent.reset_cli_spawn_count()
-                out = agent.discover_claude_options(deep=False)
-                self.assertEqual(agent.get_cli_spawn_count(), 0,
-                                 "file-first discovery must not spawn")
-                self.assertEqual(out["currentModel"], "haiku")
-                values = [o["value"] for o in out["models"]]
-                self.assertIn("haiku", values)
-                self.assertIn("fable", values)
-
     def test_discover_settings_catalog_is_grok_only(self) -> None:
-        """Shipped catalog path must not invoke Claude discovery."""
+        """Shipped catalog path discovers Grok options and nothing else."""
         with mock.patch.object(
             agent,
             "discover_grok_options",
             return_value={"models": [], "currentModel": "grok-4.5"},
-        ) as dg, mock.patch.object(agent, "discover_claude_options") as dc:
+        ) as dg:
             cat = agent.discover_settings_catalog(deep=False)
             dg.assert_called_once()
-            dc.assert_not_called()
             self.assertIn("grok", cat)
             self.assertNotIn("claude", cat)
             self.assertEqual(cat["grok"]["currentModel"], "grok-4.5")

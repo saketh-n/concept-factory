@@ -38,8 +38,6 @@ WORKSPACE.mkdir(exist_ok=True)
 # Path to the Grok CLI. Override with GROK_BIN if it isn't on PATH
 # (common install: ~/.grok/bin/grok).
 GROK_BIN = os.environ.get("GROK_BIN") or shutil.which("grok") or "grok"
-# Retained for legacy helpers/tests only — not used by factory jobs.
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
 
 # Global factory settings (Grok options). Separate from data.json so topic
 # cards and driver config don't thrash the same lock/file.
@@ -47,8 +45,6 @@ SETTINGS_FILE = Path(__file__).parent / "settings.json"
 _settings_lock = threading.Lock()
 
 DRIVER_GROK = "grok"
-# Historical id only (run history labels); never selected as active driver.
-DRIVER_CLAUDE = "claude"
 DRIVERS = (DRIVER_GROK,)
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
@@ -67,9 +63,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 # Observed factory runs land near ~0.9M tok/$; we use a clean 1M so $1 → 1_000_000
 # tokens. Not exact billing parity (cache hits / model mix shift the real rate).
 TOKENS_PER_USD = 1_000_000
-
-# Historical Claude bootstrap default (legacy helpers only).
-_CLAUDE_BOOTSTRAP_MODELS = frozenset({"", "sonnet"})
 
 
 def default_settings() -> dict:
@@ -218,19 +211,16 @@ def save_settings(settings: dict) -> dict:
 # Dropdown options come from real CLIs / their config files — never a hard-coded
 # model ID list in the frontend.
 #
-# TTL cache: discovery can take ~1s (Claude PTY). Cache results so settings open
-# is fast after the first poll; force=True / refresh busts the cache.
-# Concurrent callers coalesce onto one in-flight discovery.
+# TTL cache: discovery reads files/spawns are cheap but not free; cache results
+# so settings open is fast after the first poll; force=True / refresh busts the
+# cache. Concurrent callers coalesce onto one in-flight discovery.
 #
 # Sources:
 #   Grok current  → ~/.grok/config.toml [models].default
 #   Grok models   → ~/.grok/models_cache.json (CLI's own cache), else `grok models`
-#   Claude current → ~/.claude/settings.json "model" + PTY /model
-#   Claude models  → `claude -p /model` (PTY; full Available list)
-#   Enums         → `grok --help` / `claude --help` in parallel
+#   Enums         → `grok --help`
 #
-# Probes within a driver run in parallel; drivers run in parallel too so wall
-# time ≈ max(probe) rather than sum.
+# Probes run in parallel so wall time ≈ max(probe) rather than sum.
 
 import time as _time
 
@@ -240,24 +230,7 @@ CATALOG_CLI_TIMEOUT = int(os.environ.get("CF_SETTINGS_CATALOG_TIMEOUT", "90"))
 # file-first (~ms), so a short TTL is cheap and keeps the widget in step with
 # changes made directly in the CLIs (e.g. /model in an interactive session).
 CATALOG_TTL_SECONDS = int(os.environ.get("CF_SETTINGS_CATALOG_TTL", "15"))
-# Claude's full Available: list needs a ~1s headless PTY session (`-p /model`).
-# File-first policy: routine polls NEVER spawn it — current model comes from
-# ~/.claude/settings.json and the model list from cached `--help` aliases.
-# The PTY probe runs only on deep refresh (refresh button / force=True), or
-# always/never when CF_SETTINGS_CLAUDE_PTY is explicitly 1/0.
-_claude_pty_env = os.environ.get("CF_SETTINGS_CLAUDE_PTY", "").strip().lower()
 
-
-def _use_claude_pty(deep: bool) -> bool:
-    if _claude_pty_env in ("1", "true", "yes", "on"):
-        return True
-    if _claude_pty_env in ("0", "false", "no", "off"):
-        return False
-    return deep
-
-
-# Retained for backwards compat with any external readers.
-CATALOG_USE_CLAUDE_PTY = _use_claude_pty(False)
 
 _catalog_lock = threading.Lock()
 _catalog_cache: Optional[dict] = None
@@ -298,108 +271,18 @@ def _run_discovery_cli_pipes(argv: List[str], timeout: int) -> dict:
     }
 
 
-def _run_discovery_cli_pty(argv: List[str], timeout: int) -> dict:
-    """Run under a pseudo-TTY.
-
-    Claude Code's headless ``/model`` listing fails with a spurious API 400 when
-    stdout is a plain pipe (``model: String should have at most 256 characters``)
-    but succeeds when attached to a PTY — same argv. Use this for that probe.
-    """
-    import pty
-    import select
-
-    master, slave = pty.openpty()
-    try:
-        proc = subprocess.Popen(
-            argv,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            close_fds=True,
-        )
-    finally:
-        os.close(slave)
-
-    chunks: List[bytes] = []
-    deadline = _time.time() + timeout
-    try:
-        while _time.time() < deadline:
-            remaining = max(0.05, deadline - _time.time())
-            ready, _, _ = select.select([master], [], [], min(0.5, remaining))
-            if master in ready:
-                try:
-                    data = os.read(master, 8192)
-                except OSError:
-                    break
-                if not data:
-                    break
-                chunks.append(data)
-            if proc.poll() is not None:
-                # Drain residual output.
-                while True:
-                    ready, _, _ = select.select([master], [], [], 0.05)
-                    if master not in ready:
-                        break
-                    try:
-                        data = os.read(master, 8192)
-                    except OSError:
-                        data = b""
-                    if not data:
-                        break
-                    chunks.append(data)
-                break
-        else:
-            proc.kill()
-            try:
-                proc.wait(timeout=2)
-            except Exception:
-                pass
-            return {
-                "argv": list(argv),
-                "stdout": b"".join(chunks).decode("utf-8", errors="replace"),
-                "stderr": "",
-                "returncode": -1,
-                "error": f"timed out after {timeout}s",
-                "pty": True,
-            }
-        rc = proc.wait(timeout=5)
-    finally:
-        try:
-            os.close(master)
-        except OSError:
-            pass
-
-    text = b"".join(chunks).decode("utf-8", errors="replace")
-    # Strip common PTY noise (script ^D, CR).
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", text)  # ANSI CSI
-    return {
-        "argv": list(argv),
-        "stdout": text,
-        "stderr": "",
-        "returncode": rc if rc is not None else -1,
-        "error": None,
-        "pty": True,
-    }
-
-
 def run_discovery_cli(
     argv: List[str],
     timeout: Optional[int] = None,
-    *,
-    use_pty: bool = False,
 ) -> dict:
     """Spawn a discovery CLI and return {argv, stdout, stderr, returncode, error}.
 
     This is the single spawn seam tests spy on to prove live polling vs cache hits.
-    Set ``use_pty=True`` for Claude's headless ``/model`` probe (pipe breaks it).
     """
     global _cli_spawn_count
     _cli_spawn_count += 1
     t = CATALOG_CLI_TIMEOUT if timeout is None else timeout
     try:
-        if use_pty:
-            return _run_discovery_cli_pty(argv, t)
         return _run_discovery_cli_pipes(argv, t)
     except FileNotFoundError as e:
         return {
@@ -408,7 +291,6 @@ def run_discovery_cli(
             "stderr": "",
             "returncode": 127,
             "error": f"CLI not found: {e}",
-            "pty": use_pty,
         }
     except subprocess.TimeoutExpired as e:
         return {
@@ -417,7 +299,6 @@ def run_discovery_cli(
             "stderr": (e.stderr or "") if isinstance(e.stderr, str) else "",
             "returncode": -1,
             "error": f"timed out after {t}s",
-            "pty": use_pty,
         }
     except Exception as e:  # noqa: BLE001
         return {
@@ -426,7 +307,6 @@ def run_discovery_cli(
             "stderr": "",
             "returncode": -1,
             "error": str(e),
-            "pty": use_pty,
         }
 
 
@@ -483,134 +363,6 @@ def parse_grok_models_output(text: str) -> dict:
     }
 
 
-def map_claude_current_to_alias(
-    current_label: str,
-    available: List[str],
-    settings_model: str = "",
-) -> str:
-    """Map CLI 'Current model: Fable 5' / settings ids onto a selectable alias.
-
-    Prefer exact available matches, then settings.json model, then label tokens
-    (``Fable 5`` → ``fable``, ``Haiku 4.5`` → ``haiku``).
-    """
-    values = [v for v in available if v]
-    value_set = set(values)
-    settings_model = (settings_model or "").strip()
-    current_label = (current_label or "").strip()
-
-    if settings_model and settings_model in value_set:
-        return settings_model
-
-    # settings may store full ids: claude-fable-5[1m] → fable[1m] / fable
-    if settings_model:
-        low = settings_model.lower()
-        wants_1m = "[1m]" in low
-        # Prefer longer alias matches (fable[1m] before fable); if settings
-        # encodes a 1m context window, prefer *[1m] aliases first.
-        ranked = sorted(
-            values,
-            key=lambda v: (
-                0 if wants_1m and "[1m]" in v.lower() else 1,
-                -len(v),
-            ),
-        )
-        for v in ranked:
-            vl = v.lower()
-            base = vl.replace("[1m]", "")
-            if vl in low or low in vl:
-                return v
-            # claude-fable-5[1m] contains "fable"
-            if base and base in low:
-                if wants_1m and "[1m]" not in vl:
-                    # keep looking for a 1m variant first
-                    continue
-                return v
-        # Strip provider prefix / version noise
-        core = re.sub(r"^claude-", "", low)
-        core = re.sub(r"\[1m\]", "", core)
-        core = re.sub(r"-\d.*$", "", core)  # fable-5 → fable (approx)
-        for v in ranked:
-            base = v.lower().replace("[1m]", "")
-            if base and (base in core or core.startswith(base)):
-                return v
-
-    if not current_label:
-        return ""
-
-    # Exact available match on full label
-    if current_label in value_set:
-        return current_label
-
-    # "Fable 5" / "Haiku 4.5" / "Sonnet 5" → first token
-    first = current_label.split()[0].strip().lower()
-    # Prefer 1m variant only when settings said so (handled above); label alone → base
-    if first in value_set:
-        return first
-
-    # Label contains alias
-    low_label = current_label.lower()
-    for v in sorted(values, key=lambda x: len(x), reverse=True):
-        if v.lower() in low_label:
-            return v
-
-    return first if first else ""
-
-
-def parse_claude_models_output(text: str, settings_model: str = "") -> dict:
-    """Parse headless ``claude -p /model`` text into options + **current** alias.
-
-    Typical output:
-      Current model: Fable 5
-      Usage: /model <name>. Available: sonnet, opus, haiku, fable, ...
-    """
-    models: List[dict] = []
-    text = text or ""
-    cm = re.search(r"(?im)Current model:\s*(.+?)\s*$", text)
-    current_label = cm.group(1).strip() if cm else ""
-
-    avail = re.search(r"(?is)Available:\s*(.+?)(?:\.\s*$|\n|$)", text)
-    if avail:
-        blob = avail.group(1)
-        blob = re.sub(r"(?i)\bor a full model ID\b.*$", "", blob).strip()
-        parts = [p.strip().strip(".") for p in blob.split(",") if p.strip()]
-        cleaned: List[str] = []
-        for p in parts:
-            p = re.sub(r"(?i)^\s*or\s+", "", p).strip()
-            if not p:
-                continue
-            if not re.match(r"^[\w.\[\]/-]+$", p):
-                continue
-            cleaned.append(p)
-        for mid in cleaned:
-            models.append(_opt(mid))
-    if not models:
-        for m in re.finditer(r"(?m)^\s*[-*]\s+([A-Za-z0-9_./\[\]-]+)\s*$", text):
-            models.append(_opt(m.group(1)))
-
-    seen = set()
-    uniq: List[dict] = []
-    for o in models:
-        if o["value"] in seen:
-            continue
-        seen.add(o["value"])
-        uniq.append(o)
-
-    values = [o["value"] for o in uniq]
-    current = map_claude_current_to_alias(current_label, values, settings_model)
-    # Mark current in labels
-    for o in uniq:
-        if current and o["value"] == current:
-            o["default"] = True
-            o["label"] = f"{o['value']} (current)"
-
-    return {
-        "models": uniq,
-        "default": current,
-        "currentModel": current,
-        "currentLabel": current_label,
-    }
-
-
 def parse_help_possible_values(help_text: str, flag: str) -> List[str]:
     """Extract enum values for a CLI flag from ``--help`` text.
 
@@ -663,7 +415,7 @@ def parse_help_possible_values(help_text: str, flag: str) -> List[str]:
 
 
 def parse_help_effort_levels(help_text: str) -> List[str]:
-    """Claude ``--effort`` levels from help (low, medium, high, xhigh, max)."""
+    """``--effort`` levels parsed from CLI help text."""
     vals = parse_help_possible_values(help_text, "--effort")
     if vals:
         return vals
@@ -753,21 +505,12 @@ def _read_grok_models_cache() -> dict:
 # --- Disk-cached `--help` (enums + model aliases without spawning) ----------
 # Help output only changes when the CLI binary changes, so cache it on disk
 # keyed by the binary's (path, mtime, size). Steady-state discovery then reads
-# only files: ~/.claude/settings.json, ~/.grok/{config.toml,models_cache.json},
-# and this cache — zero process spawns, ~ms wall time. A deep refresh
+# only files: ~/.grok/{config.toml,models_cache.json} and this cache — zero
+# process spawns, ~ms wall time. A deep refresh
 # (refresh button) bypasses the cache and re-runs `--help`.
 
 _HELP_CACHE_FILE = Path(__file__).parent / ".cli_help_cache.json"
 _help_cache_lock = threading.Lock()
-
-# The full Claude model list (sonnet/opus/haiku/fable/...) only appears in the
-# PTY `/model` "Available:" output, which is deep-only. `claude --help` does not
-# enumerate every alias (notably haiku), so shallow discovery would drop models
-# the user actually has. We persist the last deep-probed list to disk, keyed by
-# the same binary fingerprint, so shallow discovery serves the complete list
-# with zero spawns and a deep refresh keeps it current.
-_MODEL_LIST_CACHE_FILE = Path(__file__).parent / ".cli_model_list_cache.json"
-_model_list_lock = threading.Lock()
 
 
 def _bin_fingerprint(bin_path: str) -> Optional[dict]:
@@ -785,50 +528,6 @@ def _load_help_cache() -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError, ValueError):
         return {}
-
-
-def _load_model_list_cache() -> dict:
-    try:
-        data = json.loads(_MODEL_LIST_CACHE_FILE.read_text())
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError, ValueError):
-        return {}
-
-
-def cached_claude_models(bin_path: str = None) -> List[str]:
-    """Last deep-probed Claude model aliases for this binary, or []."""
-    fp = _bin_fingerprint(bin_path or CLAUDE_BIN)
-    if fp is None:
-        return []
-    with _model_list_lock:
-        entry = _load_model_list_cache().get(fp["path"])
-    if (
-        isinstance(entry, dict)
-        and entry.get("mtime") == fp["mtime"]
-        and entry.get("size") == fp["size"]
-        and isinstance(entry.get("models"), list)
-    ):
-        return [m for m in entry["models"] if isinstance(m, str)]
-    return []
-
-
-def save_claude_model_list(models: List[str], bin_path: str = None) -> None:
-    """Persist deep-probed model aliases keyed by binary fingerprint (best-effort)."""
-    models = [m for m in (models or []) if isinstance(m, str) and m.strip()]
-    if not models:
-        return
-    fp = _bin_fingerprint(bin_path or CLAUDE_BIN)
-    if fp is None:
-        return
-    with _model_list_lock:
-        cache = _load_model_list_cache()
-        cache[fp["path"]] = {"mtime": fp["mtime"], "size": fp["size"], "models": models}
-        try:
-            tmp = _MODEL_LIST_CACHE_FILE.with_name(_MODEL_LIST_CACHE_FILE.name + ".tmp")
-            tmp.write_text(json.dumps(cache) + "\n")
-            tmp.replace(_MODEL_LIST_CACHE_FILE)
-        except OSError:
-            pass
 
 
 def get_cli_help(bin_path: str, refresh: bool = False) -> dict:
@@ -975,197 +674,10 @@ def discover_grok_options(deep: bool = False) -> dict:
     }
 
 
-def _claude_models_from_help(help_text: str) -> List[str]:
-    """Secondary source: model aliases mentioned in ``claude --help`` examples."""
-    # e.g. 'fable', 'opus', or 'sonnet'  /  'claude-fable-5'
-    found: List[str] = []
-    for m in re.finditer(
-        r"['\"]((?:claude-)?(?:sonnet|opus|haiku|fable|best)[A-Za-z0-9_.\[\]-]*)['\"]",
-        help_text or "",
-        re.I,
-    ):
-        mid = m.group(1)
-        if mid not in found:
-            found.append(mid)
-    return found
-
-
-def _read_claude_user_settings_model() -> str:
-    """Model id from ``~/.claude/settings.json`` when present (CLI sticky selection)."""
-    path = Path.home() / ".claude" / "settings.json"
-    try:
-        data = json.loads(path.read_text())
-        if isinstance(data, dict):
-            m = data.get("model")
-            return str(m).strip() if m else ""
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        pass
-    return ""
-
-
-def discover_claude_options(deep: bool = False) -> dict:
-    """Discovery for Claude Code — file-first.
-
-    **Current model** comes from ``~/.claude/settings.json`` (instant, exactly
-    what the CLI persists). **Available models** come from disk-cached
-    ``claude --help`` aliases. Steady-state → zero process spawns.
-
-    ``deep=True`` (refresh button / force) additionally runs headless
-    ``claude -p /model`` under a PTY (~1s) for the CLI's full Available: list,
-    and re-runs ``--help``. CF_SETTINGS_CLAUDE_PTY=1/0 forces the PTY probe
-    always/never.
-    """
-    settings_model = _read_claude_user_settings_model()
-    model_argv = [
-        CLAUDE_BIN,
-        "-p",
-        "/model",
-        "--output-format",
-        "text",
-    ]
-
-    def _help() -> dict:
-        return get_cli_help(CLAUDE_BIN, refresh=deep)
-
-    def _model_pty() -> dict:
-        return run_discovery_cli(model_argv, use_pty=True)
-
-    model_run: Optional[dict] = None
-    if not _use_claude_pty(deep):
-        help_run = _help()
-        combined = ""
-        models_probe = {
-            "argv": ["file+help", "settings.json", "claude --help"],
-            "returncode": 0,
-            "error": None,
-            "pty": False,
-            "skipped": True,
-        }
-    else:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_model = pool.submit(_model_pty)
-            f_help = pool.submit(_help)
-            model_run = f_model.result()
-            help_run = f_help.result()
-        combined = (model_run.get("stdout") or "") + "\n" + (model_run.get("stderr") or "")
-        models_probe = {
-            "argv": model_run.get("argv"),
-            "returncode": model_run.get("returncode"),
-            "error": model_run.get("error"),
-            "pty": model_run.get("pty"),
-        }
-
-    if combined.strip().startswith("{"):
-        try:
-            evt = json.loads(combined.strip().splitlines()[0])
-            if isinstance(evt, dict) and evt.get("result"):
-                combined = str(evt["result"])
-        except (json.JSONDecodeError, ValueError):
-            pass
-    parsed = parse_claude_models_output(combined, settings_model=settings_model)
-    help_text = (help_run.get("stdout") or "") + "\n" + (help_run.get("stderr") or "")
-    # Prefer settings.json as source of truth for *current* (file is what CLI persists).
-    help_models = _claude_models_from_help(help_text)
-    if not parsed["models"]:
-        if help_models:
-            current = map_claude_current_to_alias(
-                "", help_models, settings_model
-            ) or (help_models[0] if help_models else "")
-            parsed = {
-                "models": [_opt(m) for m in help_models],
-                "default": current,
-                "currentModel": current,
-                "currentLabel": "",
-            }
-    # Merge help aliases into list so we never lose documented models.
-    if help_models:
-        have = {o["value"] for o in parsed["models"]}
-        for m in help_models:
-            if m not in have:
-                parsed["models"].append(_opt(m))
-                have.add(m)
-    if deep:
-        # Deep probe saw the full "Available:" list — persist it so shallow
-        # polls can serve the complete set (incl. haiku) without spawning.
-        save_claude_model_list([o["value"] for o in parsed["models"]])
-    else:
-        # Shallow: fold in the last deep-probed list so models absent from
-        # --help (e.g. haiku) don't disappear between refreshes.
-        have = {o["value"] for o in parsed["models"]}
-        for m in cached_claude_models():
-            if m not in have:
-                parsed["models"].append(_opt(m))
-                have.add(m)
-    # Current: settings.json wins when present.
-    if settings_model:
-        values = [o["value"] for o in parsed.get("models") or []]
-        mapped = map_claude_current_to_alias(
-            parsed.get("currentLabel") or "", values, settings_model
-        )
-        if mapped:
-            parsed["currentModel"] = mapped
-            parsed["default"] = mapped
-        elif settings_model not in values:
-            # Full id not in list — still surface it as selected + option.
-            parsed["models"].insert(0, _opt(settings_model, f"{settings_model} (current)"))
-            parsed["currentModel"] = settings_model
-            parsed["default"] = settings_model
-    elif not parsed.get("currentModel"):
-        values = [o["value"] for o in parsed.get("models") or []]
-        parsed["currentModel"] = map_claude_current_to_alias(
-            parsed.get("currentLabel") or "", values, ""
-        )
-        parsed["default"] = parsed["currentModel"]
-
-    # Mark current on labels
-    cur = parsed.get("currentModel") or ""
-    for o in parsed["models"]:
-        if cur and o["value"] == cur:
-            o["default"] = True
-            if "(current)" not in o["label"]:
-                o["label"] = f"{o['value']} (current)"
-
-    perm = parse_help_possible_values(help_text, "--permission-mode")
-    effort = parse_help_effort_levels(help_text)
-    err_parts = [
-        x
-        for x in ((model_run or {}).get("error"), help_run.get("error"))
-        if x
-    ]
-    if not parsed["models"]:
-        detail = ((model_run or {}).get("stderr") or (model_run or {}).get("stdout") or "")[
-            -240:
-        ]
-        err_parts.append(
-            f"claude model list empty (rc={(model_run or {}).get('returncode')}): {detail}"
-        )
-    current = parsed.get("currentModel") or parsed.get("default") or ""
-    return {
-        "driver": DRIVER_CLAUDE,
-        "models": parsed["models"],
-        "defaultModel": current,
-        "currentModel": current,
-        "currentLabel": parsed.get("currentLabel") or "",
-        "settingsModel": settings_model,
-        "permissionModes": [_opt(v, _labelize(v)) for v in perm],
-        "efforts": [_opt("", "Default")] + [_opt(v, _labelize(v)) for v in effort],
-        "error": "; ".join(err_parts) if err_parts and not parsed["models"] else None,
-        "probes": {
-            "models": models_probe,
-            "help": {
-                "argv": help_run.get("argv"),
-                "returncode": help_run.get("returncode"),
-                "error": help_run.get("error"),
-            },
-        },
-    }
-
-
 def resolve_model_selection(
     stored: str,
     cli_current: str,
     *,
-    driver: str = DRIVER_GROK,
     follow_cli: bool = False,
 ) -> str:
     """Choose which model id the settings UI / jobs should use.
@@ -1178,9 +690,6 @@ def resolve_model_selection(
     cli_current = (cli_current or "").strip()
     if follow_cli and cli_current:
         return cli_current
-    # Legacy: historical Claude bootstrap "sonnet" treated as unset if ever passed.
-    if driver == DRIVER_CLAUDE and stored in _CLAUDE_BOOTSTRAP_MODELS:
-        return cli_current or stored
     if not stored:
         return cli_current
     return stored
@@ -1202,7 +711,6 @@ def apply_cli_current_to_settings(
     s["grok"]["model"] = resolve_model_selection(
         s["grok"].get("model") or "",
         grok_cur,
-        driver=DRIVER_GROK,
         follow_cli=follow_cli,
     )
     s["cliCurrent"] = {"grok": grok_cur}
@@ -1372,24 +880,6 @@ def cli_sync_enabled() -> bool:
     return v not in ("0", "false", "no", "off")
 
 
-def _write_claude_cli_model(model: str) -> dict:
-    """Legacy no-op retained for older tests; factory no longer syncs Claude."""
-    path = Path.home() / ".claude" / "settings.json"
-    return {
-        "driver": DRIVER_CLAUDE,
-        "target": str(path),
-        "model": model,
-        "ok": True,
-        "changed": False,
-        "error": None,
-        "skipped": "claude-deprecated",
-    }
-
-
-def _claude_settings_path() -> Path:
-    return Path.home() / ".claude" / "settings.json"
-
-
 def _grok_config_path() -> Path:
     return Path.home() / ".grok" / "config.toml"
 
@@ -1413,12 +903,6 @@ def current_models_signature() -> str:
         return f"{p}:{st.st_mtime_ns}:{st.st_size}"
     except OSError:
         return f"{p}:-"
-
-
-def detect_claude_model_overrides(target_model: str) -> List[dict]:
-    """Legacy helper — always empty now that Claude is not a factory driver."""
-    del target_model
-    return []
 
 
 def _write_grok_cli_model(model: str) -> dict:
@@ -2074,46 +1558,6 @@ def build_grok_cmd(
     return cmd
 
 
-def build_claude_cmd(
-    prompt: str,
-    cwd: Path,
-    *,
-    session_id: Optional[str] = None,
-    dangerously_skip: bool = False,
-    permission_mode: str = "bypassPermissions",
-    model: str = "",
-    effort: str = "",
-    bin_path: Optional[str] = None,
-) -> List[str]:
-    """Build the argv for a headless Claude Code turn.
-
-    Claude's print mode uses ``-p`` / ``--print`` with ``stream-json`` output.
-    ``--verbose`` is required so intermediate assistant events stream live
-    rather than only the final result.
-    """
-    cmd = [
-        bin_path or CLAUDE_BIN,
-        "-p",
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-    ]
-    # cwd is the process working directory; also pass --add-dir for tool access.
-    skip = bool(dangerously_skip)
-    if skip:
-        cmd += ["--dangerously-skip-permissions"]
-    elif permission_mode:
-        cmd += ["--permission-mode", permission_mode]
-    if model and str(model).strip():
-        cmd += ["--model", str(model).strip()]
-    if effort and str(effort).strip():
-        cmd += ["--effort", str(effort).strip()]
-    if session_id:
-        cmd += ["--resume", session_id]
-    return cmd
-
-
 def build_driver_cmd(
     driver: str,
     prompt: str,
@@ -2308,40 +1752,6 @@ def _run_grok_once(
     )
 
 
-def _run_claude_once(
-    prompt: str,
-    cwd: Path,
-    emit: Callable[[str], None],
-    session_id: Optional[str],
-    dangerously_skip: bool,
-    permission_mode: str,
-    timeout: int,
-    model: str = "",
-    effort: str = "",
-    recorder=None,
-) -> dict:
-    """Single attempt at a headless Claude Code turn."""
-    cmd = build_claude_cmd(
-        prompt,
-        cwd,
-        session_id=session_id,
-        dangerously_skip=dangerously_skip,
-        permission_mode=permission_mode,
-        model=model,
-        effort=effort,
-    )
-    return _run_cli_once(
-        cmd,
-        cwd,
-        emit,
-        session_id,
-        timeout,
-        driver_label="Claude",
-        stream_kind="claude",
-        recorder=recorder,
-    )
-
-
 def run_grok(
     prompt: str,
     cwd: Path,
@@ -2396,55 +1806,6 @@ def run_grok(
             reasoning_effort=reasoning_effort,
             recorder=recorder,
             budget_tokens=budget_tokens,
-        )
-    return result
-
-
-def run_claude(
-    prompt: str,
-    cwd: Path,
-    on_line: Optional[Callable[[str], None]] = None,
-    session_id: Optional[str] = None,
-    permission_mode: str = "bypassPermissions",
-    dangerously_skip: bool = False,
-    timeout: int = PLAN_TIMEOUT,
-    model: str = "",
-    effort: str = "",
-    recorder=None,
-) -> dict:
-    """Run one headless Claude Code turn, streaming progress via ``on_line``.
-
-    Uses ``--output-format stream-json --verbose``. Returns ``{sessionId, error}``.
-    Auth is Claude's own (OAuth or ``ANTHROPIC_API_KEY``).
-    """
-    emit = on_line or (lambda _s: None)
-    result = _run_claude_once(
-        prompt,
-        cwd,
-        emit,
-        session_id,
-        dangerously_skip,
-        permission_mode,
-        timeout,
-        model=model,
-        effort=effort,
-        recorder=recorder,
-    )
-    if result["error"] and session_id and _looks_like_session_error(result["error"]):
-        emit("Session resume failed — starting a fresh Claude session…")
-        if recorder is not None:
-            recorder.retry()
-        result = _run_claude_once(
-            prompt,
-            cwd,
-            emit,
-            None,
-            dangerously_skip,
-            permission_mode,
-            timeout,
-            model=model,
-            effort=effort,
-            recorder=recorder,
         )
     return result
 

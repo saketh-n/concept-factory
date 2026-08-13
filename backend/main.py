@@ -310,7 +310,7 @@ app.add_middleware(
 def _warm_settings_catalog() -> None:
     """Pre-poll the settings catalog in the background at boot.
 
-    Discovery costs ~1s cold (Claude CLI process startup dominates), so pay it
+    Discovery costs ~1s cold (CLI process startup dominates), so pay it
     while the server is idle instead of on first modal open. Disable with
     CF_SETTINGS_WARM=0 (tests do this).
     """
@@ -344,8 +344,6 @@ class DriverSettingsUpdate(BaseModel):
     """Partial or full settings blob from the dashboard modal."""
     driver: Optional[str] = None  # ignored; always coerced to grok
     grok: Optional[dict] = None
-    # Accepted but ignored for backward-compat with older clients.
-    claude: Optional[dict] = None
 
 
 @app.get("/api/settings")
@@ -408,7 +406,7 @@ def put_settings(payload: DriverSettingsUpdate) -> dict:
     """
     current = agent.load_settings()
     patch = payload.model_dump(exclude_none=True)
-    # driver / claude patches are ignored — normalize_settings forces Grok-only.
+    # driver patches are ignored — normalize_settings forces Grok-only.
     if "grok" in patch and isinstance(patch["grok"], dict):
         current.setdefault("grok", {}).update(patch["grok"])
     saved = agent.save_settings(current)

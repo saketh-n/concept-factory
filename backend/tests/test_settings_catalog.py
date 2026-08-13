@@ -37,11 +37,6 @@ Available models:
   - grok-build-0.1
 """
 
-FIXTURE_CLAUDE_MODEL = """\
-Current model: Haiku 4.5
-Usage: /model <name>. Available: sonnet, opus, haiku, fable, best, sonnet[1m], opus[1m], fable[1m], opusplan, default, or a full model ID.
-"""
-
 FIXTURE_GROK_HELP = """\
       --permission-mode <MODE>
           Permission mode [possible values: default, acceptEdits, auto, dontAsk, bypassPermissions, plan]
@@ -70,61 +65,19 @@ class ParserTests(unittest.TestCase):
         # No empty "CLI default" placeholder row
         self.assertTrue(all(m["value"] for m in parsed["models"]))
 
-    def test_parse_claude_models_includes_fable(self) -> None:
-        # Legacy parser still works for residual helpers.
-        text = (
-            "Current model: Haiku 4.5\n"
-            "Usage: /model <name>. Available: sonnet, opus, haiku, fable, best, "
-            "or a full model ID.\n"
-        )
-        parsed = agent.parse_claude_models_output(text)
-        values = [m["value"] for m in parsed["models"]]
-        self.assertIn("fable", values)
-        self.assertIn("sonnet", values)
-        self.assertEqual(parsed["currentModel"], "haiku")
-
-    def test_parse_claude_current_fable(self) -> None:
-        text = (
-            "Current model: Fable 5\n"
-            "Usage: /model <name>. Available: sonnet, opus, haiku, fable, best, "
-            "sonnet[1m], opus[1m], fable[1m], opusplan, default, or a full model ID.\n"
-        )
-        parsed = agent.parse_claude_models_output(text)
-        self.assertEqual(parsed["currentModel"], "fable")
-        self.assertEqual(parsed["currentLabel"], "Fable 5")
-
-    def test_map_settings_model_full_id(self) -> None:
-        alias = agent.map_claude_current_to_alias(
-            "Fable 5",
-            ["sonnet", "opus", "haiku", "fable", "fable[1m]"],
-            settings_model="claude-fable-5[1m]",
-        )
-        self.assertEqual(alias, "fable[1m]")
-
     def test_resolve_model_selection(self) -> None:
-        # Empty / bootstrap sonnet → CLI current (legacy claude driver arg)
+        # Empty stored → live CLI current, not ""
         self.assertEqual(
-            agent.resolve_model_selection("", "fable", driver="claude"),
-            "fable",
+            agent.resolve_model_selection("", "grok-4.5"),
+            "grok-4.5",
+        )
+        # Explicit override kept unless follow_cli
+        self.assertEqual(
+            agent.resolve_model_selection("grok-3-mini", "grok-4.5"),
+            "grok-3-mini",
         )
         self.assertEqual(
-            agent.resolve_model_selection("sonnet", "fable", driver="claude"),
-            "fable",
-        )
-        # Explicit non-bootstrap override kept unless follow_cli
-        self.assertEqual(
-            agent.resolve_model_selection("opus", "fable", driver="claude"),
-            "opus",
-        )
-        self.assertEqual(
-            agent.resolve_model_selection(
-                "opus", "fable", driver="claude", follow_cli=True
-            ),
-            "fable",
-        )
-        # Grok empty → concrete current, not ""
-        self.assertEqual(
-            agent.resolve_model_selection("", "grok-4.5", driver="grok"),
+            agent.resolve_model_selection("grok-3-mini", "grok-4.5", follow_cli=True),
             "grok-4.5",
         )
 
