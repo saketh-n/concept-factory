@@ -233,7 +233,6 @@ def save_settings(settings: dict) -> dict:
 # time ≈ max(probe) rather than sum.
 
 import time as _time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Wall-clock for a single discovery subprocess.
 CATALOG_CLI_TIMEOUT = int(os.environ.get("CF_SETTINGS_CATALOG_TIMEOUT", "90"))

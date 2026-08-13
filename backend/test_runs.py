@@ -4,7 +4,6 @@ Everything here is hermetic — no CLI is spawned, no credits are spent. Stream
 events are fed straight into the recorder from fixtures shaped like real
 Claude Code ``stream-json`` / Grok ``streaming-json`` output.
 """
-import json
 
 import pytest
 from fastapi.testclient import TestClient
