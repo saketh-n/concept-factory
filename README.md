@@ -10,6 +10,50 @@ guide plus a **Test** game per topic, e.g. cron, regex, tar), but the harness it
 domain-agnostic: swap the plan/build prompts and the template and it will factory
 anything.
 
+## Tour
+
+**The overworld map** — the default board view. Every topic group is a house on a
+Three.js island, every topic a cottage; walk between them with WASD/arrows and press
+Enter to open one. The Workbench tray below collects cards still in plan mode, and the
+credits HUD (top right) shows the live prepaid balance:
+
+![3D overworld map view](docs/screenshots/map-view.png)
+
+**The card board** — the same library as a grouped card list with pipeline status,
+review badges, search, and multi-select consolidation. Full-stack concepts get a
+launch control:
+
+![Cards view](docs/screenshots/cards-view.png)
+
+**Plan review** — every generated plan is a short, reviewable markdown document.
+Edit it, refine it with feedback (re-invokes the agent), or approve it with an
+optional per-build dollar budget:
+
+![Plan review modal](docs/screenshots/plan-modal.png)
+
+**The Runs dashboard** — every agent run is persisted with structured metrics:
+cost, duration, tokens, verification-gate outcomes, and per-level validator pass
+rates:
+
+![Runs dashboard](docs/screenshots/runs-dashboard.png)
+
+**Run drill-in** — any run expands into its summary (cost, tokens, turns/tool calls,
+session, exit code) with the full log, the raw event stream, and one-click
+JSON/NDJSON/TXT export:
+
+![Run detail](docs/screenshots/run-detail.png)
+
+**Agent settings** — model, permission mode, reasoning effort, and a max build
+budget, with dropdown options discovered live from the Grok CLI (never a hard-coded
+model list):
+
+![Agent settings modal](docs/screenshots/settings-modal.png)
+
+**A built concept** — served at `/concepts/<slug>/` with an injected widget for
+in-app improve requests and version history:
+
+![A served concept app](docs/screenshots/concept-page.png)
+
 ## How it works
 
 ```
@@ -67,7 +111,7 @@ anything.
   the harness re-runs every gate itself before a concept is marked built. `is_built()`
   checks the workspace on disk, not a persisted status enum.
 - **Agents never touch git or secrets.** All commits are made deterministically by the
-  backend (`backend/agent.py`), which also hides synthetic maintenance commits
+  backend (`backend/agent/gitops.py`), which also hides synthetic maintenance commits
   (reverts, protective snapshots) from the user-facing history. The publishing design
   (see `meta-agent/ARCHITECTURE.md`) keeps tokens structurally outside the agent
   environment: minimal spawned env, and a plain non-agent push worker gated on
@@ -99,11 +143,19 @@ anything.
 
 ```
 concept-factory/
-├── backend/      # FastAPI harness: state, agent driver, verification, git,
-│                 # serving, credits, per-concept tutor chat (SSE)
-├── frontend/     # React + Vite + TypeScript + Tailwind dashboard
-├── meta-agent/   # generation skill, house-style template, harness architecture notes
-└── launch.sh     # starts backend + frontend together
+├── backend/
+│   ├── main.py       # FastAPI app assembly
+│   ├── routers/      # HTTP surface: topics, settings+credits, runs, concepts
+│   ├── store.py      # topic state models + data.json persistence
+│   ├── jobs.py       # background plan/build/improve/revert job runners
+│   ├── agent/        # driver package: settings, catalog discovery, prompts,
+│   │                 # Grok CLI execution, git ops, verification gates, xAI API
+│   ├── runs.py       # per-run instrumentation (metrics, events, logs)
+│   └── tests/        # pytest suite
+├── frontend/         # React + Vite + TypeScript + Tailwind dashboard
+├── meta-agent/       # generation skill, house-style template, architecture notes
+├── docs/screenshots/ # the images in this README
+└── launch.sh         # starts backend + frontend together
 ```
 
 ## Quick start
@@ -120,7 +172,7 @@ concept-factory/
 ./launch.sh
 ```
 
-This creates a Python venv, installs deps, runs `npm install` in frontend/, starts the FastAPI backend (port 8000) + Vite dev server (port 5173), and opens the dashboard.
+This creates a Python venv, installs deps, runs `npm install` in frontend/, and starts the FastAPI backend (port 8000) + Vite dev server (port 5173).
 
 - **Dashboard**: http://localhost:5173 (3D overworld + plan review + Runs metrics)
 - **Backend API docs**: http://localhost:8000/docs
@@ -128,36 +180,31 @@ This creates a Python venv, installs deps, runs `npm install` in frontend/, star
 
 State lives in `backend/data.json`. All generated concepts land in `backend/workspace/`.
 
-### Grok / Help features
+If port 8000 is taken, run the backend elsewhere and point the Vite proxy at it:
+`uvicorn main:app --port 8001` plus `CF_BACKEND_URL=http://localhost:8001 npm run dev`.
 
-- **In-app Help**: Click the **?** button (top-right) for keyboard shortcuts, slash commands, troubleshooting, and Grok-specific tips.
-- **Project skills**: The `concept-repo-builder` skill (in `meta-agent/.claude/skills/`) is auto-loaded by the harness for all generation tasks. See `meta-agent/README.md`.
-- **CLI help cache**: Backend caches `grok --help` / `claude --help` output for speed (see `backend/agent.py`).
-- **Plan mode**: Use the floating Workbench tray or `/plan` in the Grok CLI for structured generation.
+### Generation internals worth knowing
 
-See **Troubleshooting** and **Keyboard Shortcuts** sections below for common issues and power-user tips.
+- **Project skill**: The `concept-repo-builder` skill (in `meta-agent/.claude/skills/`) is the house-style spec the harness condenses into every generation prompt. See `meta-agent/README.md`.
+- **Plan mode**: Cards whose plan hasn't been approved yet collect in the floating **Workbench** tray on the map view, so plan review never gets lost behind the 3D board.
+- **CLI help cache**: The backend caches `grok --help` output keyed by binary fingerprint so settings-catalog discovery costs zero spawns at steady state (see `backend/agent/catalog.py`).
 
 ## Troubleshooting
 
 **Common issues & fixes**
 
-- **"No Grok binary found"**: Run `which grok` or set `GROK_BIN=$(which grok)` . The settings catalog probes `grok --help`.
+- **"No Grok binary found"**: Run `which grok` or set `GROK_BIN=$(which grok)`. The settings catalog probes `grok --help`.
 - **Credits HUD shows $0**: Double-check `XAI_MANAGEMENT_API_KEY`. Try the Refresh button in Settings.
-- **Builds fail on first run**: `npm install` can be slow on cold cache — the launcher retries. Check `frontend/dist/` after a build.
-- **Agent loops forever**: Wall-clock timeouts in `backend/runs.py` kill after ~10 min. Check `backend/runs/<id>/log.txt`.
+- **Builds fail on first run**: `npm install` can be slow on a cold cache. Check the run's log in the Runs dashboard.
+- **Agent loops forever**: Wall-clock timeouts in `backend/agent/driver.py` kill runaway sessions (7 min for plans, 30 min for builds). Check `backend/runs/<id>/log.txt`.
 - **Dashboard stuck on "planning"**: Refresh the page or restart `./launch.sh`. State is reconciled from disk on startup.
-- **Permission errors**: The backend uses `--permission-mode` from Grok CLI. See Settings modal.
+- **Permission errors**: The backend passes `--permission-mode` to the Grok CLI. See the Settings modal.
 
-**Grok-specific tips (this project uses Grok Build heavily)**
+**Keyboard shortcuts**
 
-- Use the `concept-repo-builder` skill for new CS topics.
-- In the Grok CLI: `/plan`, `/build`, `/improve`, or just describe the concept.
-- Keyboard shortcuts (also in the in-app Help modal):
-  - `?` — Open help
-  - `Cmd/Ctrl + K` — Focus search / quick add topic
-  - `Esc` — Close modals
-  - `1/2/3` — Switch board views (Cards / Map / Runs)
-- For headless parallel runs the harness manages concurrency and verification gates.
+- `Cmd/Ctrl + Enter` — submit the add-topics intake
+- `Esc` — close modals
+- On the map view: `WASD` / arrow keys walk, `Enter` opens the nearest stop, `Esc`/`Backspace` goes back up a level
 
 Report issues in the Runs dashboard (export JSON/NDJSON/logs with one click).
 
