@@ -6,18 +6,13 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-BACKEND = Path(__file__).resolve().parent
-if str(BACKEND) not in sys.path:
-    sys.path.insert(0, str(BACKEND))
-
-import agent  # noqa: E402
+import agent
 
 
 class FakeHome:

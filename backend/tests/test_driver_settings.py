@@ -8,24 +8,18 @@ Grok Build is the only factory driver; Claude Code is deprecated.
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-# Ensure backend/ is importable when run as ``python test_driver_settings.py``.
-BACKEND = Path(__file__).resolve().parent
-if str(BACKEND) not in sys.path:
-    sys.path.insert(0, str(BACKEND))
+from fastapi.testclient import TestClient
 
-import agent  # noqa: E402
-from main import app  # noqa: E402
+import agent
+from main import app
 
-try:
-    from fastapi.testclient import TestClient
-except ImportError:  # pragma: no cover
-    TestClient = None  # type: ignore
+# backend/ dir, for static source-text assertions below.
+BACKEND = Path(__file__).resolve().parents[1]
 
 
 class SettingsPersistenceTests(unittest.TestCase):
@@ -420,7 +414,6 @@ class DriverDispatchTests(unittest.TestCase):
         self.assertGreaterEqual(main_src.count("agent.run_agent("), 4)
 
 
-@unittest.skipIf(TestClient is None, "fastapi TestClient unavailable")
 class SettingsApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

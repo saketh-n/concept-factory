@@ -7,25 +7,19 @@ Claude discovery helpers may still exist but are not required for catalog.
 from __future__ import annotations
 
 import shutil
-import sys
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-BACKEND = Path(__file__).resolve().parent
-if str(BACKEND) not in sys.path:
-    sys.path.insert(0, str(BACKEND))
+from fastapi.testclient import TestClient
 
-import agent  # noqa: E402
+import agent
+from main import app
 
-try:
-    from fastapi.testclient import TestClient
-    from main import app
-except ImportError:  # pragma: no cover
-    TestClient = None  # type: ignore
-    app = None  # type: ignore
+# backend/ dir, for static source-text assertions below.
+BACKEND = Path(__file__).resolve().parents[1]
 
 HAS_GROK = bool(shutil.which("grok") or (agent.GROK_BIN and Path(agent.GROK_BIN).is_file()))
 
@@ -260,7 +254,6 @@ class LiveDiscoveryTests(unittest.TestCase):
             self.assertIn(cur, values)
 
 
-@unittest.skipIf(TestClient is None, "fastapi TestClient unavailable")
 class CatalogApiTests(unittest.TestCase):
     def setUp(self) -> None:
         agent.clear_settings_catalog_cache()
