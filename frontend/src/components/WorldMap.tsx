@@ -9,6 +9,7 @@ import {
 import { Canvas } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Topic } from "../api";
+import { usePolling } from "../hooks/usePolling";
 import {
   buildTree,
   nodeAtPath,
@@ -210,12 +211,7 @@ export default function WorldMap({
   const mx = (x: number) => ((x + WORLD_W / 2 + PAD) / mapW) * miniW;
   const mz = (z: number) => ((z + WORLD_D / 2 + PAD) / mapD) * miniH;
   const [playerBlip, setPlayerBlip] = useState({ x: 0, z: 2 });
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setPlayerBlip({ ...playerRef.current });
-    }, 80);
-    return () => window.clearInterval(id);
-  }, []);
+  usePolling(() => setPlayerBlip({ ...playerRef.current }), 80);
 
   return (
     <div className="world-map-root">

@@ -7,6 +7,7 @@ import {
   type RunRecord,
 } from "../api";
 import { filterRuns, metricsFromRuns } from "../runMetrics";
+import { usePolling } from "../hooks/usePolling";
 import { IconDownload, IconSearch, IconX } from "./icons";
 
 /**
@@ -544,24 +545,18 @@ export default function RunsDashboard() {
 
   const anyRunning = (runs ?? []).some((r) => r.status === "running");
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
+  usePolling(
+    async () => {
       try {
         const r = await api.listRuns({ limit: 500 });
-        if (!cancelled) setRuns(r.runs);
+        setRuns(r.runs);
       } catch {
-        if (!cancelled && runs === null) setRuns([]);
+        setRuns((prev) => prev ?? []);
       }
-    };
-    load();
-    const id = window.setInterval(load, anyRunning ? 2500 : 6000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anyRunning]);
+    },
+    anyRunning ? 2500 : 6000,
+    { immediate: true }
+  );
 
   // Drop a selected run id if it disappeared (or is filtered out by kind).
   useEffect(() => {

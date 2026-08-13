@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Credits } from "../api";
+import { usePolling } from "../hooks/usePolling";
 import { IconRefresh } from "./icons";
 
 /**
@@ -93,11 +94,7 @@ export default function CreditsHud({
       );
   }, []);
 
-  useEffect(() => {
-    refresh(false);
-    const id = window.setInterval(() => refresh(false), 15000);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+  usePolling(() => refresh(false), 15000, { immediate: true });
 
   // Keep on-screen after resize.
   useEffect(() => {

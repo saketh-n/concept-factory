@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Topic } from "./api";
+import { usePolling } from "./hooks/usePolling";
 import TopicCard from "./components/TopicCard";
 import WorldMap from "./components/WorldMap";
 import GroupTree from "./components/GroupTree";
@@ -124,14 +125,10 @@ export default function App() {
   }, []);
 
   // Poll while any plan/build job is running so statuses update live.
-  useEffect(() => {
-    if (!anyBusy) return;
-    const id = window.setInterval(async () => {
-      const s = await api.getState();
-      setTopics((prev) => mergeTopics(prev, s.topics));
-    }, 2000);
-    return () => window.clearInterval(id);
-  }, [anyBusy]);
+  usePolling(async () => {
+    const s = await api.getState();
+    setTopics((prev) => mergeTopics(prev, s.topics));
+  }, anyBusy ? 2000 : null);
 
   const generatePlans = async () => {
     await api.generatePlans();

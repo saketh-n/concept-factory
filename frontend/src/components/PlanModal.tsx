@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, conceptUrl, type Commit, type Topic } from "../api";
+import { usePolling } from "../hooks/usePolling";
 
 function relTime(iso: string): string {
   const then = new Date(iso).getTime();
@@ -126,23 +127,18 @@ function StreamLog({ topicId }: { topicId: string }) {
   const [lines, setLines] = useState<string[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
+  usePolling(
+    async () => {
       try {
         const { lines } = await api.getLog(topicId);
-        if (alive) setLines(lines);
+        setLines(lines);
       } catch {
         /* ignore transient poll errors */
       }
-    };
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [topicId]);
+    },
+    1000,
+    { immediate: true, restartKey: topicId }
+  );
 
   // Keep the newest output in view.
   useEffect(() => {

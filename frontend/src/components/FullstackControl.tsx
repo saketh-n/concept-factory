@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type AppState } from "../api";
+import { usePolling } from "../hooks/usePolling";
 
 /** Launch / open / stop controls for a full-stack concept that runs its own
  *  backend (served on a remapped port, not statically). */
@@ -10,17 +11,17 @@ export default function FullstackControl({ slug }: { slug: string }) {
   const starting = app.status === "starting";
 
   // Poll while starting so the UI flips to "Open" once the app is reachable.
-  useEffect(() => {
-    if (!starting) return;
-    const id = window.setInterval(async () => {
+  usePolling(
+    async () => {
       try {
         setApp(await api.appStatus(slug));
       } catch {
         /* ignore */
       }
-    }, 1500);
-    return () => window.clearInterval(id);
-  }, [starting, slug]);
+    },
+    starting ? 1500 : null,
+    { restartKey: slug }
+  );
 
   // Pick up an already-running app on mount (e.g. after a page reload).
   useEffect(() => {
