@@ -396,18 +396,18 @@ class DriverDispatchTests(unittest.TestCase):
         self.assertEqual(rg.call_args.kwargs.get("model") or rg.call_args[1].get("model"), "grok-4.5")
 
     def test_jobs_use_run_agent_not_run_grok(self) -> None:
-        """Static check: main.py agent jobs call run_agent, not run_grok."""
-        main_src = (BACKEND / "main.py").read_text()
-        self.assertIn("agent.run_agent(", main_src)
+        """Static check: jobs.py agent jobs call run_agent, not run_grok."""
+        jobs_src = (BACKEND / "jobs.py").read_text()
+        self.assertIn("agent.run_agent(", jobs_src)
         # Jobs must not hard-code run_grok anymore.
         for needle in (
             "agent.run_grok(prompt",
             "agent.run_grok(\n",
             "agent.run_grok(agent.",
         ):
-            self.assertNotIn(needle, main_src)
+            self.assertNotIn(needle, jobs_src)
         # Count run_agent call sites (plan, consolidate, build, improve).
-        self.assertGreaterEqual(main_src.count("agent.run_agent("), 4)
+        self.assertGreaterEqual(jobs_src.count("agent.run_agent("), 4)
 
 
 class SettingsApiTests(unittest.TestCase):
@@ -536,11 +536,12 @@ class BudgetUxStaticTests(unittest.TestCase):
         self.assertIn("maxBuildBudgetUsd", src)
         self.assertIn("empty = unlimited", src)
 
-    def test_main_build_job_threads_budget(self) -> None:
-        src = (BACKEND / "main.py").read_text()
-        self.assertIn("apply_build_budget=True", src)
-        self.assertIn("build_budget_usd", src)
-        self.assertIn("budgetUsd", src)
+    def test_build_job_threads_budget(self) -> None:
+        jobs_src = (BACKEND / "jobs.py").read_text()
+        self.assertIn("apply_build_budget=True", jobs_src)
+        self.assertIn("build_budget_usd", jobs_src)
+        route_src = (BACKEND / "routers" / "topics.py").read_text()
+        self.assertIn("budgetUsd", route_src)
 
 
 class DeprecateClaudeUxStaticTests(unittest.TestCase):
